@@ -2,7 +2,7 @@
 
 Cheapest energy drink prices near you, for Perth WA.
 
-Companion app to the [DrinkWatch API](https://github.com/Blaroid/drinkwatch).
+Companion app to the [DrinkWatch API](https://github.com/Blaroid/Drinkwatch).
 Supermarket prices come from the backend's scrapers; petrol-station and IGA
 prices come from people using this app.
 
