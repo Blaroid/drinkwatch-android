@@ -32,11 +32,42 @@ data class Product(
     val barcode: String?,
     val category: String,
 ) {
+    /**
+     * Human label: "Monster Ultra Zero 500ml x4".
+     *
+     * Defensive about older rows: if the stored name still contains the brand or
+     * the size (early scrapes saved raw retailer titles), do not repeat them.
+     */
     fun label(): String = buildString {
-        append(brand).append(' ').append(name)
-        variant?.takeIf { it.isNotBlank() }?.let { append(' ').append(it) }
-        sizeMl?.let {
-            append(' ').append(it).append("ml")
+        val brandText = brand.trim()
+        val nameText = name.trim()
+        val lowerName = nameText.lowercase()
+        val lowerBrand = brandText.lowercase()
+
+        if (brandText.isNotEmpty()) append(brandText)
+
+        val withoutBrand = when {
+            lowerBrand.isNotEmpty() && lowerName.startsWith(lowerBrand) ->
+                nameText.substring(brandText.length).trim().trimStart('-', ':', ',')
+            else -> nameText
+        }
+        val cleanName = withoutBrand
+            .replace(Regex("(?i)\\benergy\\s+drink\\b"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        if (cleanName.isNotEmpty() && !cleanName.equals(brandText, ignoreCase = true)) {
+            if (isNotEmpty()) append(' ')
+            append(cleanName)
+        }
+
+        variant?.takeIf { it.isNotBlank() && !cleanName.contains(it, ignoreCase = true) }?.let {
+            append(' ').append(it)
+        }
+
+        val size = sizeMl
+        if (size != null && !lowerName.contains(size.toString() + "ml")) {
+            if (isNotEmpty()) append(' ')
+            append(size).append("ml")
             if (packCount > 1) append(" x").append(packCount)
         }
     }
