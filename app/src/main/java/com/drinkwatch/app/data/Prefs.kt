@@ -67,7 +67,7 @@ class Prefs(context: Context) {
 
     /** What the home screen should call this place. */
     fun locationTitle(): String =
-        homeLabel.ifBlank { placeLabel }.ifBlank { "My location" }
+        homeLabel.ifBlank { placeLabel }.ifBlank { "Perth CBD" }
 
     /** Store a fresh fix; only fills the label when the user has not named it. */
     fun applyPosition(lat: Double, lon: Double, place: String?) {

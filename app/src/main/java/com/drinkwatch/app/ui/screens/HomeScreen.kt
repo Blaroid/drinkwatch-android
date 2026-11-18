@@ -47,6 +47,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -145,7 +147,9 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
         locating = false
     }
 
-    LaunchedEffect(Unit) { load() }
+    // Reload whenever the screen comes back: after tracking a drink, returning from
+    // Settings, or coming back from the background.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { load() }
 
     Scaffold(
         topBar = {
@@ -225,6 +229,7 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
             prefs = prefs,
             api = api,
             onDismiss = { detailSlug = null },
+            onTracked = { load() },
             onNavigate = { offer ->
                 val intent = Intent(
                     Intent.ACTION_VIEW,
@@ -307,6 +312,7 @@ private fun DrinkDetailSheet(
     api: Api,
     onDismiss: () -> Unit,
     onNavigate: (Offer) -> Unit,
+    onTracked: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -397,6 +403,7 @@ private fun DrinkDetailSheet(
                         prefs.addTracked(slug)
                         WidgetRefresh.refreshNow(context)
                         alertMessage = "Added to your list"
+                        onTracked()
                     }) { Text("Track this") }
                 }
             } else if (!loading) {
