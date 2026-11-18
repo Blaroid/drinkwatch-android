@@ -1,91 +1,146 @@
-# DrinkWatch Android
+# DrinkWatch for Android
 
-Companion app for the DrinkWatch API (https://cans.hazzardous.online): prices of
-energy drinks near you, plus crowd price capture, basket and budget planning.
+Cheapest energy drink prices near you, for Perth WA.
 
-Download: https://cans.hazzardous.online/app
+Companion app to the [DrinkWatch API](https://github.com/Blaroid/drinkwatch).
+Supermarket prices come from the backend's scrapers; petrol-station and IGA
+prices come from people using this app.
+
+**Download:** https://cans.hazzardous.online/app (sideloaded APK, no Play Store)
+
+| Prices | Add a price | Budget |
+|---|---|---|
+| ![Prices](docs/screenshots/prices.png) | ![Add](docs/screenshots/add.png) | ![Budget](docs/screenshots/budget.png) |
+
+| Suggestions after your list | Typo-tolerant search | You |
+|---|---|---|
+| ![Suggestions](docs/screenshots/suggestions.png) | ![Search](docs/screenshots/search.png) | ![You](docs/screenshots/you.png) |
 
 ## What it does
 
-* **Prices** - cheapest can of each tracked drink nearby, with per-can price, deal
-  badge, store distance and how old the price is. Tap a row for every store's
-  price, "Navigate" (opens Maps) and "Alert me" (notify under a threshold).
-* **Add** - three ways to contribute:
-  * scan a barcode (Play Services code scanner) or type the digits; unknown codes
-    open a "new can" form (name/brand/size) that queues a product for review;
-  * photograph a shelf price tag: ML Kit reads the text on device, the app picks
-    the sell price (ignoring "was/save" and unit prices), and the photo is attached
-    as evidence (EXIF/GPS stripped server-side);
-  * type it in manually.
-* **Basket** - add drinks and quantities, compare against pack sizes and multibuys
-  at every nearby store, see the split-across-stores total, then plan the drive
-  with a FuelWatch-derived fuel cost and a "worth it?" verdict.
-* **Budget** - "max caffeine for my money" (single store or multi-store), with the
-  400 mg/day guideline warning.
-* **You** - caffeine log for today, price alerts, notifications, leaderboard-ish
-  contribution history.
-* **Widget** - home-screen widget with the four cheapest tracked drinks, refreshed
-  every 30 minutes by WorkManager, plus background polling that turns new price
-  alerts into phone notifications.
+**Prices** - the cheapest can of each drink you follow, with per-can price, store,
+distance and how old the price is. Tap a row for every store's price, "Navigate"
+(hands off to Maps) and "Alert me". The list ends with
+*"That's the end of your list"* and a few other cans nearby.
+
+**Add** - three ways to contribute:
+
+* **Barcode** - Play Services code scanner, or type the digits. Unknown barcodes
+  open a "new can" form (name, brand, size) that queues the product for review.
+* **Price tag** - photograph the shelf/fridge tag; ML Kit reads the text on device
+  and a heuristic picks the sell price (skipping "was/save" and `$7.00 / 1L` unit
+  prices). The photo is uploaded as evidence.
+* **Type it in** - pick the drink and store from the fuzzy search.
+
+**Basket** - add drinks and quantities; the API returns the cheapest legal mix of
+singles, packs and multibuys at each store, the split-across-stores total, and a
+drive plan with a FuelWatch-derived fuel cost and a "worth it?" verdict.
+
+**Budget** - "most caffeine for my money" across one store or several, with the
+400 mg/day guideline warning. (Because Australian energy drinks are capped at
+32 mg/100 ml, this is effectively "most millilitres per dollar".)
+
+**You** - caffeine log for today, price alerts, notifications.
+
+**Widget** - home-screen widget with the four cheapest followed drinks, refreshed
+every 30 minutes. The same background worker polls the API for price alerts and
+raises local notifications.
 
 ## Architecture
 
     data/
-      Api.kt          OkHttp + org.json client for every endpoint (no codegen)
-      Models.kt       immutable models parsed from JSON
-      Prefs.kt        EncryptedSharedPreferences: device token, home location,
-                      radius, tracked drinks, widget cache
+      Api.kt            OkHttp + org.json client, one function per endpoint
+      Models.kt         immutable models, parsed next to the endpoints
+      Prefs.kt          EncryptedSharedPreferences: token, home location, radius,
+                        tracked drinks, widget cache
       BasketStorage.kt  basket persisted as "slug:qty"
-      Geo.kt          LocationManager helper (no Play Services needed) + Maps intent
-      Images.kt       decode/rotate/downscale camera output for OCR
-      Ocr.kt          ML Kit text recognition + shelf-price heuristic
+      Geo.kt            LocationManager helper + Maps intent
+      PlaceName.kt      suburb/town for a coordinate (label default)
+      Images.kt         decode, EXIF-rotate, downscale camera output
+      Ocr.kt            ML Kit text recognition + shelf-price heuristic
     ui/
-      Nav.kt          bottom-tab NavHost
-      screens/        Home, Add, Basket, Budget, You, Settings
-      components/     shared cards, chips, pickers
-      theme/          Material 3 palette
+      Nav.kt            bottom-tab NavHost
+      screens/          Home, Add, Basket, Budget, You, Settings
+      components/       cards, chips, pickers (debounced fuzzy search)
+      theme/            Material 3 palette
     widget/
-      PriceWidget.kt  Glance widget
-      WidgetRefresh.kt  WorkManager periodic refresh + notification polling
+      PriceWidget.kt    Glance widget
+      WidgetRefresh.kt  WorkManager periodic refresh + alert polling
 
-Design choices worth knowing:
+Deliberate choices:
 
-* **org.json over kotlinx.serialization** - no compiler plugin, no codegen, and the
-  payloads are small. Parsing lives in `Api.kt` next to each endpoint.
-* **No CameraX** - scanning uses the Play Services code scanner and price tags use
-  the system camera app + `TakePicture`. Far less code than a camera pipeline, and
-  full-resolution photos for OCR.
+* **No CameraX** - barcodes use the Play Services code scanner, price tags use the
+  system camera via `TakePicture` (full resolution, EXIF-rotated) then ML Kit.
+  Less code to get wrong than a camera pipeline.
+* **org.json over kotlinx.serialization** - no compiler plugin or codegen for a few
+  small payloads.
 * **LocationManager over FusedLocationProvider** - works without Play Services.
-* **Every screen owns its state** with `remember`/`LaunchedEffect`; there are no
-  ViewModels yet, which keeps the app small but means cancellation is coarse.
+* **Text recognition is the unbundled ML Kit model** (downloaded via Play Services
+  on first use): the APK is 15 MB instead of 63 MB.
+* **No ViewModels yet** - each screen owns its state with `remember`/effects.
 
 ## Building
 
-Requires JDK 17 and an Android SDK with platform 35. On powermax everything is
-installed under `~/android-build`:
+Needs JDK 17 and Android SDK platform 35.
 
-    ./scripts/build.sh assembleDebug      # debug APK
-    ./scripts/build.sh assembleRelease    # signed with keystore.properties
-    ./scripts/build.sh testDebugUnitTest  # JVM unit tests (price/OCR parsing)
+    ./scripts/build.sh assembleDebug       # debug APK
+    ./scripts/build.sh assembleRelease     # signed with keystore.properties
+    ./scripts/build.sh testDebugUnitTest   # JVM tests: price + OCR parsing
 
-`keystore.properties` (gitignored) points at `keystore/drinkwatch.jks`. Losing that
-key means future APKs cannot update an installed app, so it is backed up to the
-redmax disk. Version bumps go in `app/build.gradle.kts`.
+Release signing reads `keystore.properties` (gitignored):
 
-## Distribution
+    storeFile=keystore/drinkwatch.jks
+    storePassword=...
+    keyAlias=drinkwatch
+    keyPassword=...
 
-Sideloading: build, copy to `~/drinkwatch/apk/drinkwatch.apk` on powermax, bump
-`~/drinkwatch/apk/version.json`, and the API serves it at `/app/drinkwatch.apk`.
-Play Store would need a listing, data-safety declaration (location + user-submitted
-prices) and review; nothing in the code blocks that, but the app is not ready for
-commercial distribution while it depends on scraped supermarket prices.
+**Keep that keystore.** Lose it and no future APK can update an installed app. It
+is backed up to the redmax disk.
 
-## Not built yet
+## Releasing
 
-* Wear OS tile + complication (the API payload is already the right shape).
-* Android Auto: not possible - Google's car app categories (navigation, POI, IOT,
-  messaging, calling, weather, media, parked video/games/browsers) do not include
-  price comparison, so review would reject it.
-* Receipt OCR flow (ML Kit text on a docket + `POST /v1/receipts/parse`), which is
-  the fastest way to add many prices at once.
-* Offline-first caching beyond the widget payload.
+1. Bump `versionCode` and `versionName` in `app/build.gradle.kts`.
+2. `./scripts/build.sh assembleRelease`
+3. Copy `app/build/outputs/apk/release/app-release.apk` to the server's
+   `~/drinkwatch/apk/drinkwatch.apk` and update `version.json` there.
+4. The API serves it at `/app` (install page), `/app/drinkwatch.apk` and
+   `/app/version.json`.
+
+## Version history
+
+| Version | Change |
+|---|---|
+| 0.1.0 | first sideload build: prices, barcode + price-tag capture, basket, budget, alerts, caffeine log, widget |
+| 0.1.1 | clean labels (no repeated brand/size) |
+| 0.3.0 | "use my location" button; location label defaults to the suburb |
+| 0.3.1 | end-of-list suggestions from `/v1/widget?suggest` |
+| 0.3.2 | location title falls back to the default area, not "My location" |
+| 0.3.3 | reload on resume; refresh right after tracking |
+| 0.3.4 | picker rows show the clean label only |
+
+## Privacy
+
+* One anonymous **device token** (random, stored in EncryptedSharedPreferences) so
+  crowd submissions can be attributed and moderated. No account, no email.
+* **Location** is used only to compute distances and to name the place; it is
+  stored on the device and sent as lat/lon on price queries.
+* **Photos** are re-encoded server-side (EXIF including GPS stripped), capped at
+  1600 px, and served by unguessable token.
+* Nothing is shared with third parties. Scraped supermarket prices are indicative,
+  not a quote.
+
+## Not built (and why)
+
+* **Android Auto** - Google's car app categories are navigation, POI, IOT,
+  messaging, calling, weather, media and parked video/games/browsers. Price
+  comparison is none of them, so review would reject it. The useful in-car move is
+  the "Navigate to cheapest store" intent that already exists.
+* **Wear OS** - next up: a Tile and a complication fed by the same `/v1/widget`
+  payload, pushed from the phone over the Data Layer API.
+* **Receipt scanning** - the API already has `/v1/receipts/parse`; the app flow
+  (ML Kit on a docket, confirm a whole receipt at once) is the fastest way to add
+  many prices and is the obvious next feature.
+
+## Licence
+
+Personal project; no licence granted for redistribution of the scraped price data.
