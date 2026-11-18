@@ -385,6 +385,59 @@ class Api(private val prefs: Prefs) {
 
     suspend fun health(): JSONObject = getJson("/healthz")
 
+    /** Latest published build, from /app/version.json (no auth, outside /v1). */
+    suspend fun latestAppVersion(): AppUpdate = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(prefs.baseUrl + "/app/version.json")
+            .header("User-Agent", "DrinkWatch-Android/0.1")
+            .get()
+            .build()
+        val payload = JSONObject(execute(request))
+        AppUpdate(
+            versionCode = payload.optInt("versionCode", 0),
+            versionName = payload.optString("versionName", "?"),
+            notes = payload.optString("notes", ""),
+            apkUrl = payload.optString("apk").ifBlank { prefs.baseUrl + "/app/drinkwatch.apk" },
+        )
+    }
+
+    /** Stream the APK to disk, reporting 0..1 progress when the size is known. */
+    suspend fun downloadApk(url: String, target: java.io.File, onProgress: (Float?) -> Unit): java.io.File =
+        withContext(Dispatchers.IO) {
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", "DrinkWatch-Android/0.1")
+                .get()
+                .build()
+            val response = client.newCall(request).execute()
+            if (!response.isSuccessful) {
+                response.close()
+                throw ApiException("Download failed: HTTP " + response.code, response.code)
+            }
+            val body = response.body ?: throw ApiException("Empty download")
+            val total = body.contentLength()
+            target.parentFile?.mkdirs()
+            body.byteStream().use { input ->
+                target.outputStream().use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    var copied = 0L
+                    var lastReport = 0L
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        output.write(buffer, 0, read)
+                        copied += read
+                        if (total > 0 && copied - lastReport > 512 * 1024) {
+                            lastReport = copied
+                            onProgress((copied.toFloat() / total).coerceIn(0f, 1f))
+                        }
+                    }
+                }
+            }
+            onProgress(1f)
+            target
+        }
+
     companion object {
         private const val TAG = "Api"
 

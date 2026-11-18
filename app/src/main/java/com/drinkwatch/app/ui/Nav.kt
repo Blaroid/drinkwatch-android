@@ -80,7 +80,9 @@ fun AppRoot() {
             composable("add") { AddScreen() }
             composable("basket") { BasketScreen() }
             composable("budget") { BudgetScreen() }
-            composable("you") { YouScreen() }
+            composable("you") {
+                YouScreen(onOpenSettings = { navController.navigate("settings") })
+            }
             composable("settings") { SettingsScreen(onBack = { navController.popBackStack() }) }
         }
     }

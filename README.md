@@ -46,6 +46,15 @@ drive plan with a FuelWatch-derived fuel cost and a "worth it?" verdict.
 every 30 minutes. The same background worker polls the API for price alerts and
 raises local notifications.
 
+**Self-update** - on launch the app compares its versionCode with
+\`/app/version.json\` and offers the new build in a dialog ("Download and install" /
+"Later", which defers that exact version). Settings has an Updates section with the
+installed version, a "Check for updates" button and the same install action. The
+APK is downloaded to \`cacheDir/updates\` and handed to the system installer through
+a FileProvider, so no store, no adb, no browser download is needed after the first
+install. \`REQUEST_INSTALL_PACKAGES\` is declared for this; if Android has not granted
+"install unknown apps", the app links straight to that toggle.
+
 ## Architecture
 
     data/
@@ -117,6 +126,7 @@ is backed up to the redmax disk.
 | 0.3.2 | location title falls back to the default area, not "My location" |
 | 0.3.3 | reload on resume; refresh right after tracking |
 | 0.3.4 | picker rows show the clean label only |
+| 0.4.0 | self-update: launch prompt + "Check for updates" in Settings; Settings reachable from the You tab |
 
 ## Privacy
 

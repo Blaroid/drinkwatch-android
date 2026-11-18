@@ -12,6 +12,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import com.drinkwatch.app.data.ServiceLocator
+import com.drinkwatch.app.ui.components.UpdatePromptDialog
 import com.drinkwatch.app.ui.AppRoot
 import com.drinkwatch.app.ui.theme.DrinkWatchTheme
 
@@ -30,8 +32,13 @@ class MainActivity : ComponentActivity() {
                     permission.launch(Manifest.permission.POST_NOTIFICATIONS)
                 }
             }
+            val updates = ServiceLocator.updates(context)
+            LaunchedEffect(Unit) {
+                runCatching { updates.check(silent = true) }
+            }
             DrinkWatchTheme {
                 AppRoot()
+                UpdatePromptDialog(updates)
             }
         }
     }

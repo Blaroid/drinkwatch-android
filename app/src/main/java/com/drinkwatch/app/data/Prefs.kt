@@ -93,6 +93,11 @@ class Prefs(context: Context) {
         get() = store.getString(KEY_BASKET, "") ?: ""
         set(value) = store.edit().putString(KEY_BASKET, value).apply()
 
+    /** Version the user chose to skip, so the launch prompt does not nag. */
+    var skippedUpdateCode: Int
+        get() = store.getInt(KEY_SKIPPED_UPDATE, 0)
+        set(value) = store.edit().putInt(KEY_SKIPPED_UPDATE, value).apply()
+
     var widgetCache: String?
         get() = store.getString(KEY_WIDGET_CACHE, null)
         set(value) = store.edit().putString(KEY_WIDGET_CACHE, value).apply()
@@ -135,5 +140,6 @@ class Prefs(context: Context) {
         private const val KEY_LAST_NOTIFICATION = "last_notification_id"
         private const val KEY_BASKET = "basket"
         private const val KEY_PLACE_LABEL = "place_label"
+        private const val KEY_SKIPPED_UPDATE = "skipped_update"
     }
 }

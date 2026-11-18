@@ -22,6 +22,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
@@ -47,6 +48,7 @@ import com.drinkwatch.app.data.PlaceName
 import com.drinkwatch.app.data.Price
 import com.drinkwatch.app.data.Product
 import com.drinkwatch.app.data.ServiceLocator
+import com.drinkwatch.app.data.UpdateState
 import com.drinkwatch.app.ui.components.ErrorBar
 import com.drinkwatch.app.ui.components.ProductPickerDialog
 import com.drinkwatch.app.ui.components.SectionCard
@@ -245,6 +247,93 @@ fun SettingsScreen(onBack: () -> Unit) {
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+            }
+
+            SectionCard(title = "Updates") {
+                val updates = remember { ServiceLocator.updates(context) }
+                val updateState = updates.state
+                Text(
+                    "Installed: v" + updates.currentVersion + " (build " + updates.currentCode + ")",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(6.dp))
+
+                when (updateState) {
+                    is UpdateState.Checking -> Text(
+                        "Checking for updates…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+
+                    is UpdateState.UpToDate -> Text(
+                        "You are on the latest version.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+
+                    is UpdateState.Available -> {
+                        Text(
+                            "Version " + updateState.update.versionName + " is available.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        if (updateState.update.notes.isNotBlank()) {
+                            Text(
+                                updateState.update.notes,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = { scope.launch { updates.downloadAndInstall(updateState.update) } },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("Download and install") }
+                    }
+
+                    is UpdateState.Downloading -> {
+                        val progress = updateState.progress
+                        if (progress == null) {
+                            LinearProgressIndicator(Modifier.fillMaxWidth())
+                        } else {
+                            LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+                            Text(
+                                "Downloading " + (progress * 100).toInt() + "%",
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
+                    }
+
+                    is UpdateState.ReadyToInstall -> OutlinedButton(
+                        onClick = { updates.install(updateState.file) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Open installer") }
+
+                    is UpdateState.Error -> Text(
+                        updateState.message,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+
+                    else -> Unit
+                }
+
+                if (!updates.canInstallPackages()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Android needs permission to install the update: allow DrinkWatch to install unknown apps.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    TextButton(onClick = { updates.openInstallPermissionSettings() }) {
+                        Text("Open permission settings")
+                    }
+                }
+
+                Spacer(Modifier.height(6.dp))
+                TextButton(onClick = { scope.launch { updates.check(silent = false) } }) {
+                    Text("Check for updates")
+                }
             }
 
             SectionCard(title = "About") {
