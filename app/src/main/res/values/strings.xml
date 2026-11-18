@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DrinkWatch</string>
+    <string name="widget_label">DrinkWatch prices</string>
+    <string name="widget_description">Cheapest energy drink prices near you</string>
+
+    <string name="nav_home">Prices</string>
+    <string name="nav_scan">Add</string>
+    <string name="nav_basket">Basket</string>
+    <string name="nav_budget">Budget</string>
+    <string name="nav_you">You</string>
+
+    <string name="home_title">Cheapest cans near you</string>
+    <string name="home_empty">No prices yet. Add one with the Add tab, or pull to refresh.</string>
+    <string name="refresh">Refresh</string>
+    <string name="open_maps">Navigate</string>
+    <string name="create_alert">Alert me</string>
+    <string name="all_stores">All stores</string>
+    <string name="per_can">/can</string>
+    <string name="per_litre">/L</string>
+    <string name="age_now">just now</string>
+    <string name="online_price">online</string>
+
+    <string name="scan_title">Add a price</string>
+    <string name="scan_barcode">Scan barcode</string>
+    <string name="scan_tag">Price tag photo</string>
+    <string name="scan_manual">Type it in</string>
+    <string name="scan_need_camera">Camera permission is needed to scan.</string>
+    <string name="scan_unknown_title">New can</string>
+    <string name="scan_unknown_body">We do not know this barcode. Type the name printed on the can and we will add it for review.</string>
+    <string name="scan_name">Name on the can</string>
+    <string name="scan_brand">Brand (optional)</string>
+    <string name="scan_size">Size (ml)</string>
+    <string name="scan_submit_new">Add to catalogue</string>
+    <string name="scan_ocr_hint">Take a photo of the shelf price tag</string>
+    <string name="scan_ocr_result">Detected price</string>
+
+    <string name="store">Store</string>
+    <string name="choose_store">Choose store</string>
+    <string name="search_store">Search name, suburb or postcode</string>
+    <string name="product">Drink</string>
+    <string name="choose_product">Choose drink</string>
+    <string name="search_product">Search drinks</string>
+    <string name="price_label">Price</string>
+    <string name="promo_label">Promo</string>
+    <string name="note_label">Note (optional)</string>
+    <string name="submit_price">Submit price</string>
+    <string name="submitted">Thanks! Price recorded.</string>
+    <string name="needs_review">Saved, but flagged for review because it is far from the usual price.</string>
+
+    <string name="basket_title">Basket</string>
+    <string name="basket_add">Add drink</string>
+    <string name="basket_compare">Compare stores</string>
+    <string name="basket_multi">Cheapest if you split across stores</string>
+    <string name="basket_saving">Save up to %1$s by picking the best store</string>
+    <string name="basket_route">Plan the drive</string>
+    <string name="basket_empty">Add a drink and a quantity to compare bulk packs and stores.</string>
+
+    <string name="budget_title">Max caffeine for your money</string>
+    <string name="budget_amount">Amount to spend</string>
+    <string name="budget_single">One store</string>
+    <string name="budget_multi">Multiple stores</string>
+    <string name="budget_run">Find the best cans</string>
+    <string name="budget_limit_warning">That is over the 400 mg daily guideline for most adults.</string>
+    <string name="budget_note">Assumes 32 mg/100 ml unless a drink overrides it.</string>
+
+    <string name="you_title">You</string>
+    <string name="alerts_title">Price alerts</string>
+    <string name="alerts_empty">No alerts yet.</string>
+    <string name="alerts_add">New alert</string>
+    <string name="alert_threshold">Notify me under</string>
+    <string name="notifications_title">Notifications</string>
+    <string name="caffeine_title">Caffeine today</string>
+    <string name="caffeine_log">I just drank one</string>
+    <string name="caffeine_remaining">%1$d mg left of %2$d mg</string>
+
+    <string name="settings_title">Settings</string>
+    <string name="settings_home">Home location</string>
+    <string name="settings_use_gps">Use my location</string>
+    <string name="settings_lat">Latitude</string>
+    <string name="settings_lon">Longitude</string>
+    <string name="settings_radius">Search radius (km)</string>
+    <string name="settings_tracked">Drinks on the home screen and widget</string>
+    <string name="settings_account">Device</string>
+    <string name="settings_new_device">Reset device identity</string>
+    <string name="settings_advanced">Advanced</string>
+    <string name="settings_base_url">API base URL</string>
+    <string name="settings_version">Version %1$s</string>
+    <string name="settings_credit">Store locations from OpenStreetMap. Fuel prices from FuelWatch WA.</string>
+    <string name="settings_receipts">Receipt mode: scan a docket to add many prices</string>
+
+    <string name="error_network">Network error: %1$s</string>
+    <string name="retry">Retry</string>
+    <string name="cancel">Cancel</string>
+    <string name="save">Save</string>
+    <string name="ok">OK</string>
+    <string name="delete">Delete</string>
+</resources>
