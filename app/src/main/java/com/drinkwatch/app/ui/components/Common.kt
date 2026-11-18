@@ -209,11 +209,6 @@ fun ProductPickerDialog(
                                 .padding(vertical = 10.dp)
                         ) {
                             Text(product.label(), style = MaterialTheme.typography.bodyMedium)
-                            Text(
-                                product.slug,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
                         }
                     }
                 }
