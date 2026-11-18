@@ -1,5 +1,6 @@
 package com.drinkwatch.app.ui.screens
 
+import android.Manifest
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.clickable
@@ -18,7 +19,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
@@ -49,6 +53,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.drinkwatch.app.data.Geo
+import com.drinkwatch.app.data.PlaceName
 import com.drinkwatch.app.data.Api
 import com.drinkwatch.app.data.Offer
 import com.drinkwatch.app.data.Prefs
@@ -77,6 +83,8 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var detailSlug by remember { mutableStateOf<String?>(null) }
+    var locationTitle by remember { mutableStateOf(prefs.locationTitle()) }
+    var locating by remember { mutableStateOf(false) }
 
     fun load() {
         scope.launch {
@@ -96,6 +104,40 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
         }
     }
 
+    var wantLocation by remember { mutableStateOf(false) }
+
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) wantLocation = true else error = "Location permission denied"
+    }
+
+    fun locateMe() {
+        if (!Geo.hasPermission(context)) {
+            permission.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+            return
+        }
+        wantLocation = true
+    }
+
+    LaunchedEffect(wantLocation) {
+        if (!wantLocation) return@LaunchedEffect
+        wantLocation = false
+        locating = true
+        error = null
+        val position = Geo.current(context)
+        if (position == null) {
+            error = "No location fix yet — check that location is on"
+        } else {
+            val place = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                PlaceName.resolve(context, position.first, position.second)
+            }
+            prefs.applyPosition(position.first, position.second, place)
+            locationTitle = prefs.locationTitle()
+            WidgetRefresh.refreshNow(context)
+            load()
+        }
+        locating = false
+    }
+
     LaunchedEffect(Unit) { load() }
 
     Scaffold(
@@ -105,13 +147,17 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
                     Column {
                         Text("Cheapest cans", fontWeight = FontWeight.SemiBold)
                         Text(
-                            "near " + prefs.homeLabel + " · " + prefs.radiusKm + " km",
+                            (if (locating) "locating…" else "near " + locationTitle) +
+                                " · " + prefs.radiusKm + " km",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 },
                 actions = {
+                    IconButton(onClick = { locateMe() }) {
+                        Icon(Icons.Filled.MyLocation, "Use my location")
+                    }
                     IconButton(onClick = { load() }) { Icon(Icons.Filled.Refresh, "Refresh") }
                     IconButton(onClick = onOpenSettings) { Icon(Icons.Filled.Settings, "Settings") }
                 },

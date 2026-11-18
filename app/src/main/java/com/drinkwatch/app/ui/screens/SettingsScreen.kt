@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import java.util.Locale
 import com.drinkwatch.app.BuildConfig
 import com.drinkwatch.app.data.Geo
+import com.drinkwatch.app.data.PlaceName
 import com.drinkwatch.app.data.Price
 import com.drinkwatch.app.data.Product
 import com.drinkwatch.app.data.ServiceLocator
@@ -80,11 +81,17 @@ fun SettingsScreen(onBack: () -> Unit) {
             if (position == null) {
                 error = "No location fix yet"
             } else {
-                prefs.lat = position.first
-                prefs.lon = position.second
+                val place = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    PlaceName.resolve(context, position.first, position.second)
+                }
+                prefs.applyPosition(position.first, position.second, place)
                 latText = String.format(Locale.ROOT, "%.4f", position.first)
                 lonText = String.format(Locale.ROOT, "%.4f", position.second)
-                message = "Location updated"
+                if (label.isBlank() && !place.isNullOrBlank()) {
+                    label = place
+                    prefs.homeLabel = place
+                }
+                message = "Location updated" + (place?.let { " · " + it } ?: "")
                 WidgetRefresh.refreshNow(context)
             }
         }
@@ -124,9 +131,17 @@ fun SettingsScreen(onBack: () -> Unit) {
                     value = label,
                     onValueChange = { label = it; prefs.homeLabel = it },
                     label = { Text("Label") },
+                    placeholder = { Text(prefs.placeLabel.ifBlank { "Suburb or town" }) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (label.isBlank() && prefs.placeLabel.isNotBlank()) {
+                    Text(
+                        "Using \"" + prefs.placeLabel + "\" from your location",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(

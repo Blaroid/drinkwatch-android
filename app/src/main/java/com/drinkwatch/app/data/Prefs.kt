@@ -57,8 +57,25 @@ class Prefs(context: Context) {
         set(value) = store.edit().putString(KEY_LON, value.toString()).apply()
 
     var homeLabel: String
-        get() = store.getString(KEY_HOME_LABEL, "Perth CBD") ?: "Perth CBD"
+        get() = store.getString(KEY_HOME_LABEL, "") ?: ""
         set(value) = store.edit().putString(KEY_HOME_LABEL, value).apply()
+
+    /** Suburb/town resolved from the last location fix; used when no label is set. */
+    var placeLabel: String
+        get() = store.getString(KEY_PLACE_LABEL, "") ?: ""
+        set(value) = store.edit().putString(KEY_PLACE_LABEL, value).apply()
+
+    /** What the home screen should call this place. */
+    fun locationTitle(): String =
+        homeLabel.ifBlank { placeLabel }.ifBlank { "My location" }
+
+    /** Store a fresh fix; only fills the label when the user has not named it. */
+    fun applyPosition(lat: Double, lon: Double, place: String?) {
+        this.lat = lat
+        this.lon = lon
+        if (place.isNullOrBlank()) return
+        if (homeLabel.isBlank()) placeLabel = place
+    }
 
     var radiusKm: Int
         get() = store.getInt(KEY_RADIUS, 15)
@@ -117,5 +134,6 @@ class Prefs(context: Context) {
         private const val KEY_WIDGET_AT = "widget_cache_at"
         private const val KEY_LAST_NOTIFICATION = "last_notification_id"
         private const val KEY_BASKET = "basket"
+        private const val KEY_PLACE_LABEL = "place_label"
     }
 }
