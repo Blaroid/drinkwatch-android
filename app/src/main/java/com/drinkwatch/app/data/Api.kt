@@ -125,26 +125,38 @@ class Api(private val prefs: Prefs) {
 
     // ---------------------------------------------------------------- reads
 
-    suspend fun widget(lat: Double, lon: Double, radiusKm: Int, slugs: List<String>): JSONObject =
-        getJson(
-            "/v1/widget",
-            mapOf(
-                "lat" to lat.toString(),
-                "lon" to lon.toString(),
-                "radius_km" to radiusKm.toString(),
-                "products" to slugs.takeIf { it.isNotEmpty() }?.joinToString(","),
-            ),
-        )
+    suspend fun widget(
+        lat: Double,
+        lon: Double,
+        radiusKm: Int,
+        slugs: List<String>,
+        suggest: Int = 0,
+    ): JSONObject = getJson(
+        "/v1/widget",
+        mapOf(
+            "lat" to lat.toString(),
+            "lon" to lon.toString(),
+            "radius_km" to radiusKm.toString(),
+            "products" to slugs.takeIf { it.isNotEmpty() }?.joinToString(","),
+            "suggest" to suggest.takeIf { it > 0 }?.toString(),
+        ),
+    )
 
-    suspend fun widgetItems(lat: Double, lon: Double, radiusKm: Int, slugs: List<String>): List<WidgetItem> {
+    suspend fun widgetItems(
+        lat: Double,
+        lon: Double,
+        radiusKm: Int,
+        slugs: List<String>,
+        suggest: Int = 0,
+    ): List<WidgetItem> {
         val payload = try {
-            widget(lat, lon, radiusKm, slugs)
+            widget(lat, lon, radiusKm, slugs, suggest)
         } catch (error: ApiException) {
             // A tracked slug that no longer exists makes the whole call 404: drop
             // the stale ones and fall back to the server's default list.
             if (error.code != 404 || slugs.isEmpty()) throw error
             prefs.trackedSlugs = emptyList()
-            widget(lat, lon, radiusKm, emptyList())
+            widget(lat, lon, radiusKm, emptyList(), suggest)
         }
         val items = payload.optJSONArray("items") ?: JSONArray()
         return (0 until items.length()).map { items.getJSONObject(it).toWidgetItem() }
@@ -467,6 +479,7 @@ internal fun JSONObject.toWidgetItem(): WidgetItem = WidgetItem(
     promo = optString("promo", "none"),
     source = optString("source"),
     ageHours = optDouble("age_hours", 0.0),
+    suggested = optBoolean("suggested", false),
 )
 
 internal fun JSONObject.toBasketResult(): BasketResult {

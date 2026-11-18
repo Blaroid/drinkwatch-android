@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -92,7 +93,13 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
             error = null
             runCatching {
                 api.ensureDevice()
-                api.widgetItems(prefs.lat, prefs.lon, prefs.radiusKm, prefs.trackedSlugs)
+                api.widgetItems(
+                    prefs.lat,
+                    prefs.lon,
+                    prefs.radiusKm,
+                    prefs.trackedSlugs,
+                    suggest = if (prefs.trackedSlugs.isEmpty()) 0 else 4,
+                )
             }.onSuccess {
                 items = it
                 WidgetRefresh.refreshNow(context)
@@ -179,7 +186,22 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                items(items, key = { it.slug }) { item ->
+                val firstSuggestion = items.indexOfFirst { it.suggested }
+                itemsIndexed(items, key = { _, item -> item.slug }) { index, item ->
+                    if (index == firstSuggestion && firstSuggestion > 0) {
+                        Column(Modifier.padding(top = 14.dp, bottom = 2.dp)) {
+                            Text(
+                                "That's the end of your list",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "Other cans with fresh prices nearby",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                     PriceCard(item) { detailSlug = item.slug }
                 }
                 if (!loading && items.isEmpty() && error == null) {

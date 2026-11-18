@@ -111,6 +111,7 @@ data class WidgetItem(
     val promo: String,
     val source: String,
     val ageHours: Double,
+    val suggested: Boolean = false,
 )
 
 data class BasketRequestItem(val slug: String, val quantity: Int, val label: String? = null)
