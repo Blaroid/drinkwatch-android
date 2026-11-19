@@ -224,6 +224,60 @@ class ParsingTest {
         assertEquals(6, cursor)
         assertEquals(listOf(7), Notifications.pending(listOf(note(7), note(6), note(5)), cursor).map { it.id })
     }
+
+    @Test
+    fun `a page that stops above the cursor hides the alerts a deeper backlog owes`() {
+        // The audited case in miniature: 60 owed, the server serves the newest 50, so
+        // 11..60 arrive and 1..10 are not on the page at all.
+        val page = (11..60).reversed().map { note(it) }
+        val coverage = Notifications.coverage(page, cursor = 0, limit = 50)
+        assertEquals(Notifications.Coverage.Truncated(missingFrom = 1, oldestVisible = 11), coverage)
+        // The window a request would still have to ask for is exactly the hidden range.
+        assertEquals(
+            (1..10).toList(),
+            ((coverage as Notifications.Coverage.Truncated).missingFrom until coverage.oldestVisible).toList(),
+        )
+    }
+
+    @Test
+    fun `a page that reaches the cursor covers the whole backlog`() {
+        // A full page whose oldest row is cursor + 1 has nothing older left above it.
+        assertEquals(
+            Notifications.Coverage.Complete,
+            Notifications.coverage((1..60).reversed().map { note(it) }, cursor = 0, limit = 60),
+        )
+        assertEquals(
+            Notifications.Coverage.Complete,
+            Notifications.coverage((6..205).reversed().map { note(it) }, cursor = 5, limit = 200),
+        )
+    }
+
+    @Test
+    fun `a short page is complete because the server ran out of alerts`() {
+        // Fewer rows than asked for means nothing older exists, even with a wide id gap
+        // (ids are shared across devices, so they are never consecutive).
+        assertEquals(
+            Notifications.Coverage.Complete,
+            Notifications.coverage(listOf(note(701), note(700)), cursor = 3, limit = 200),
+        )
+        assertEquals(Notifications.Coverage.Complete, Notifications.coverage(emptyList(), cursor = 3))
+    }
+
+    @Test
+    fun `the page ceiling sits where the server caps the feed`() {
+        // limit is Query(ge=1, le=200) and the feed offers no after_id/offset, so 200
+        // alerts above the cursor fit one page and the 201st oldest falls outside it.
+        assertEquals(200, Notifications.PAGE_LIMIT)
+        assertEquals(
+            Notifications.Coverage.Complete,
+            Notifications.coverage((1..200).reversed().map { note(it) }, cursor = 0),
+        )
+        assertEquals(
+            Notifications.Coverage.Truncated(missingFrom = 1, oldestVisible = 2),
+            Notifications.coverage((2..201).reversed().map { note(it) }, cursor = 0),
+        )
+    }
+
     // A trimmed /v1/basket/compare body: the two stores in the PR, fuel fields included.
     private val basketJson = """
         {

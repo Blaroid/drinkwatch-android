@@ -461,8 +461,15 @@ class Api(
         deleteJson("/v1/alerts/" + id)
     }
 
-    suspend fun notifications(): List<AppNotification> {
-        val array = getArray("/v1/notifications", mapOf("limit" to "50"), auth = true)
+    /**
+     * One page of alerts, newest first.
+     *
+     * The endpoint orders `created_at.desc()` and caps `limit` at 200, so the newest
+     * rows are all one request can see; [Notifications.coverage] is what says whether
+     * that page reached the push cursor.
+     */
+    suspend fun notifications(limit: Int = Notifications.PAGE_LIMIT): List<AppNotification> {
+        val array = getArray("/v1/notifications", mapOf("limit" to limit.toString()), auth = true)
         return (0 until array.length()).map {
             val row = array.getJSONObject(it)
             AppNotification(
