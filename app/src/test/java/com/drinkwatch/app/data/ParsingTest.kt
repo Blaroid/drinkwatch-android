@@ -1,5 +1,6 @@
 package com.drinkwatch.app.data
 
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -44,6 +45,31 @@ class ParsingTest {
     fun `ocr handles no dollar sign`() {
         assertEquals(429, Ocr.parsePrice("V Energy 500ml\n4.29 ea"))
         assertEquals(250, Ocr.parsePrice("SPECIAL\n2.50\nWAS 3.50"))
+    }
+
+    @Test
+    fun `ocr ignores a unit price even with no dollar sign`() {
+        // Servo and IGA tags often print no $: the bottle size must not become the price.
+        assertEquals(429, Ocr.parsePrice("MOTHER ENERGY 1.25L / SPECIAL 4.29"))
+        assertEquals(429, Ocr.parsePrice("MOTHER ENERGY 1.25L\nSPECIAL 4.29"))
+        assertEquals(429, Ocr.parsePrice("Mother 1.25Litre\n4.29"))
+    }
+
+    @Test
+    fun `unit suffix is told apart from the next line's size`() {
+        assertTrue(Ocr.isUnitSuffix("L\nSPECIAL 4.29"))
+        assertTrue(Ocr.isUnitSuffix("Litre\n4.29"))
+        assertTrue(Ocr.isUnitSuffix("ml\n4.29"))
+        assertTrue(Ocr.isUnitSuffix("kg ea"))
+        assertTrue(Ocr.isUnitSuffix(" / 1L"))
+        assertTrue(Ocr.isUnitSuffix(" per 100g"))
+        assertTrue(Ocr.isUnitSuffix(" / 100ml"))
+        assertFalse(Ocr.isUnitSuffix(" each\n$7.00"))
+        assertFalse(Ocr.isUnitSuffix(" ea"))
+        assertFalse(Ocr.isUnitSuffix(""))
+        // A bare size on the next line names that line's product, not this figure.
+        assertFalse(Ocr.isUnitSuffix("\n1L"))
+        assertFalse(Ocr.isUnitSuffix(" GST included"))
     }
 
     @Test
@@ -94,6 +120,75 @@ class ParsingTest {
             staleNote(listOf("v-blue", "monster-ultra", "red-bull"), emptyMap()),
         )
         assertNull(staleNote(emptyList(), emptyMap()))
+    }
+
+    @Test
+    fun `a watchlist longer than the api cap is asked for in batches`() {
+        val slugs = (1..9).map { "drink-$it" }
+        // /v1/widget keeps only the first 8 `products` and answers 200 anyway, so the
+        // ninth drink needs a second request rather than being silently dropped.
+        assertEquals(listOf(slugs.take(8), slugs.drop(8)), widgetBatches(slugs))
+        assertTrue(widgetBatches((1..20).map { "drink-$it" }).all { it.size <= WIDGET_BATCH })
+    }
+
+    @Test
+    fun `short and empty watchlists still make one request`() {
+        assertEquals(listOf(emptyList<String>()), widgetBatches(emptyList()))
+        assertEquals(listOf(listOf("v-blue")), widgetBatches(listOf("v-blue")))
+        // Exactly at the cap is one request, not one request plus an empty one.
+        assertEquals(1, widgetBatches((1..8).map { "drink-$it" }).size)
+    }
+
+    @Test
+    fun `a repeated slug costs no slot and no second row`() {
+        val slugs = (1..8).map { "drink-$it" } + "drink-1"
+        assertEquals(listOf((1..8).map { "drink-$it" }), widgetBatches(slugs))
+    }
+
+    // Two batched /v1/widget answers, the second carrying a suggestion that repeats a
+    // drink the first batch already returned.
+    private fun widgetPayload(generatedAt: String, vararg rows: JSONObject) = JSONObject()
+        .put("generated_at", generatedAt)
+        .put("radius_km", 15.0)
+        .put("items", JSONArray(rows.toList()))
+
+    private fun widgetRow(slug: String, suggested: Boolean = false) = JSONObject()
+        .put("slug", slug)
+        .put("label", "$slug label")
+        .put("price_cents", 329)
+        .put("store", "SpudShed")
+        .put("chain", "spudshed")
+        .put("promo", "none")
+        .put("source", "scrape")
+        .put("age_hours", 1.5)
+        .put("suggested", suggested)
+
+    @Test
+    fun `batched payloads merge in watchlist order and drop repeated rows`() {
+        val merged = mergedWidgetPayload(
+            listOf(
+                widgetPayload("2026-11-19T03:00:00Z", widgetRow("v-blue"), widgetRow("red-bull")),
+                widgetPayload(
+                    "2026-11-19T05:00:00Z",
+                    widgetRow("monster-ultra"),
+                    widgetRow("v-blue", suggested = true),
+                ),
+            ),
+        )
+        val cache = Api.cachedWidget(merged.toString())
+        // The watchlist order wins over the server's suggestion ranking, and the
+        // repeated slug keeps its tracked row (first copy) instead of appearing twice.
+        assertEquals(listOf("v-blue", "red-bull", "monster-ultra"), cache.items.map { it.slug })
+        assertFalse(cache.items.first { it.slug == "v-blue" }.suggested)
+        // The widget's age note is measured from generated_at, so it must be the
+        // oldest batch: the newer one would claim the whole list is fresher than it is.
+        assertEquals(parseInstant("2026-11-19T03:00:00Z"), cache.generatedAt)
+    }
+
+    @Test
+    fun `a single answer is left exactly as the server sent it`() {
+        val single = widgetPayload("2026-11-19T03:54:09.332071Z", widgetRow("v-blue"))
+        assertEquals("2026-11-19T03:54:09.332071Z", mergedWidgetPayload(listOf(single)).getString("generated_at"))
     }
 
     @Test
@@ -224,6 +319,60 @@ class ParsingTest {
         assertEquals(6, cursor)
         assertEquals(listOf(7), Notifications.pending(listOf(note(7), note(6), note(5)), cursor).map { it.id })
     }
+
+    @Test
+    fun `a page that stops above the cursor hides the alerts a deeper backlog owes`() {
+        // The audited case in miniature: 60 owed, the server serves the newest 50, so
+        // 11..60 arrive and 1..10 are not on the page at all.
+        val page = (11..60).reversed().map { note(it) }
+        val coverage = Notifications.coverage(page, cursor = 0, limit = 50)
+        assertEquals(Notifications.Coverage.Truncated(missingFrom = 1, oldestVisible = 11), coverage)
+        // The window a request would still have to ask for is exactly the hidden range.
+        assertEquals(
+            (1..10).toList(),
+            ((coverage as Notifications.Coverage.Truncated).missingFrom until coverage.oldestVisible).toList(),
+        )
+    }
+
+    @Test
+    fun `a page that reaches the cursor covers the whole backlog`() {
+        // A full page whose oldest row is cursor + 1 has nothing older left above it.
+        assertEquals(
+            Notifications.Coverage.Complete,
+            Notifications.coverage((1..60).reversed().map { note(it) }, cursor = 0, limit = 60),
+        )
+        assertEquals(
+            Notifications.Coverage.Complete,
+            Notifications.coverage((6..205).reversed().map { note(it) }, cursor = 5, limit = 200),
+        )
+    }
+
+    @Test
+    fun `a short page is complete because the server ran out of alerts`() {
+        // Fewer rows than asked for means nothing older exists, even with a wide id gap
+        // (ids are shared across devices, so they are never consecutive).
+        assertEquals(
+            Notifications.Coverage.Complete,
+            Notifications.coverage(listOf(note(701), note(700)), cursor = 3, limit = 200),
+        )
+        assertEquals(Notifications.Coverage.Complete, Notifications.coverage(emptyList(), cursor = 3))
+    }
+
+    @Test
+    fun `the page ceiling sits where the server caps the feed`() {
+        // limit is Query(ge=1, le=200) and the feed offers no after_id/offset, so 200
+        // alerts above the cursor fit one page and the 201st oldest falls outside it.
+        assertEquals(200, Notifications.PAGE_LIMIT)
+        assertEquals(
+            Notifications.Coverage.Complete,
+            Notifications.coverage((1..200).reversed().map { note(it) }, cursor = 0),
+        )
+        assertEquals(
+            Notifications.Coverage.Truncated(missingFrom = 1, oldestVisible = 2),
+            Notifications.coverage((2..201).reversed().map { note(it) }, cursor = 0),
+        )
+    }
+
     // A trimmed /v1/basket/compare body: the two stores in the PR, fuel fields included.
     private val basketJson = """
         {
@@ -530,11 +679,12 @@ class ParsingTest {
     }
 
     // The release key's fingerprint, shortened; the gate only ever compares strings.
-    private val releaseKey = ApkIdentity(versionCode = 14, signerSha256 = "d6527d06")
+    private val appPackage = "com.drinkwatch.app"
+    private val releaseKey = ApkIdentity(appPackage, versionCode = 14, signerSha256 = "d6527d06")
 
     @Test
     fun `install gate accepts a newer build from the same key`() {
-        val candidate = ApkIdentity(versionCode = 15, signerSha256 = "D6527D06")
+        val candidate = ApkIdentity(appPackage, versionCode = 15, signerSha256 = "D6527D06")
         assertEquals(InstallVerdict.Installable, installVerdict(releaseKey, candidate, advertisedCode = 15))
     }
 
@@ -542,32 +692,46 @@ class ParsingTest {
     fun `install gate refuses the debug key`() {
         // This is the audited failure: a build machine without keystore.properties
         // produced a debug-signed "release", and the installer cannot replace the app.
-        val candidate = ApkIdentity(versionCode = 15, signerSha256 = "fe7407e2")
+        val candidate = ApkIdentity(appPackage, versionCode = 15, signerSha256 = "fe7407e2")
         val verdict = installVerdict(releaseKey, candidate, advertisedCode = 15)
         assertTrue(verdict is InstallVerdict.Rejected)
         assertTrue((verdict as InstallVerdict.Rejected).message.contains("different key"))
     }
 
     @Test
+    fun `install gate refuses a different package`() {
+        // A valid APK for another app can pass every version and signer check that is
+        // not package-aware, and the installer would replace or reject the app.
+        val candidate = ApkIdentity("com.example.other", versionCode = 15, signerSha256 = "d6527d06")
+        val verdict = installVerdict(releaseKey, candidate, advertisedCode = 15)
+        assertTrue(verdict is InstallVerdict.Rejected)
+        assertTrue((verdict as InstallVerdict.Rejected).message.contains("not com.drinkwatch.app"))
+    }
+
+    @Test
     fun `install gate refuses an APK that is not newer than the install`() {
-        val same = ApkIdentity(versionCode = 14, signerSha256 = "d6527d06")
+        val same = ApkIdentity(appPackage, versionCode = 14, signerSha256 = "d6527d06")
         assertTrue(installVerdict(releaseKey, same, advertisedCode = 14) is InstallVerdict.Rejected)
-        val older = ApkIdentity(versionCode = 13, signerSha256 = "d6527d06")
+        val older = ApkIdentity(appPackage, versionCode = 13, signerSha256 = "d6527d06")
         assertTrue(installVerdict(releaseKey, older, advertisedCode = 13) is InstallVerdict.Rejected)
     }
 
     @Test
-    fun `install gate refuses an APK older than the metadata that advertised it`() {
+    fun `install gate refuses an APK that does not match the advertised build`() {
         // version.json said 15 but the bytes served are 14: the installer would fail.
-        val stale = ApkIdentity(versionCode = 14, signerSha256 = "d6527d06")
+        val stale = ApkIdentity(appPackage, versionCode = 14, signerSha256 = "d6527d06")
         assertTrue(installVerdict(releaseKey, stale, advertisedCode = 15) is InstallVerdict.Rejected)
+        // A newer APK than version.json is also a mismatched pair: the app cannot have
+        // read the notes for it, and the download is worth retrying once metadata lands.
+        val ahead = ApkIdentity(appPackage, versionCode = 16, signerSha256 = "d6527d06")
+        assertTrue(installVerdict(releaseKey, ahead, advertisedCode = 15) is InstallVerdict.Rejected)
     }
 
     @Test
     fun `install gate falls through when a signer or version cannot be read`() {
-        val unknownSigner = ApkIdentity(versionCode = 15, signerSha256 = null)
+        val unknownSigner = ApkIdentity(appPackage, versionCode = 15, signerSha256 = null)
         assertEquals(InstallVerdict.Installable, installVerdict(releaseKey, unknownSigner, 15))
-        val unknownInstalled = ApkIdentity(versionCode = 14, signerSha256 = null)
+        val unknownInstalled = ApkIdentity(appPackage, versionCode = 14, signerSha256 = null)
         assertEquals(InstallVerdict.Installable, installVerdict(unknownInstalled, unknownSigner, 15))
     }
 

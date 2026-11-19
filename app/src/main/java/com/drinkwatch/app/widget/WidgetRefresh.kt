@@ -4,6 +4,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.glance.appwidget.updateAll
 import androidx.work.Constraints
@@ -24,6 +25,8 @@ import com.drinkwatch.app.data.ServiceLocator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.TimeUnit
+
+private const val TAG = "WidgetWorker"
 
 /**
  * Keeps the home-screen widget warm and turns new server-side alerts into local
@@ -84,6 +87,18 @@ class WidgetWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         // blocked permission or muted channel would otherwise look like a delivery.
         val blocked = AlertGate.isBlocked(applicationContext)
         val notifications = runCatching { api.notifications() }.getOrNull() ?: return
+        // The page is the newest PAGE_LIMIT alerts and cannot be walked back, so a page
+        // that stops above the cursor means the alerts between them are not fetchable at
+        // all. Say so instead of letting the run look like it caught up: everything
+        // older than the window is behind the cursor from here on and stays unposted.
+        val coverage = Notifications.coverage(notifications, prefs.lastSeenNotificationId)
+        if (coverage is Notifications.Coverage.Truncated) {
+            Log.w(
+                TAG,
+                "alert backlog deeper than one page: ids " + coverage.missingFrom + ".." +
+                    (coverage.oldestVisible - 1) + " are outside the window",
+            )
+        }
         // Deliberately not filtered on readAt: the cursor is what decides delivery, so
         // reading an alert in the You tab can never suppress its notification.
         val pending = when (

@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -43,6 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import java.util.Locale
 import com.drinkwatch.app.BuildConfig
+import com.drinkwatch.app.data.Coordinates
 import com.drinkwatch.app.data.Geo
 import com.drinkwatch.app.data.PlaceName
 import com.drinkwatch.app.data.Price
@@ -71,6 +73,8 @@ fun SettingsScreen(onBack: () -> Unit) {
     var baseUrl by remember { mutableStateOf(prefs.baseUrl) }
     var message by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var coordError by remember { mutableStateOf<String?>(null) }
+    var confirmReset by remember { mutableStateOf(false) }
     var picker by remember { mutableStateOf(false) }
     var apiVersion by remember { mutableStateOf<String?>(null) }
     var apiFacts by remember { mutableStateOf<String?>(null) }
@@ -91,6 +95,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                 prefs.applyPosition(position.first, position.second, place)
                 latText = String.format(Locale.ROOT, "%.4f", position.first)
                 lonText = String.format(Locale.ROOT, "%.4f", position.second)
+                coordError = null
                 if (label.isBlank() && !place.isNullOrBlank()) {
                     label = place
                     prefs.homeLabel = place
@@ -158,9 +163,19 @@ fun SettingsScreen(onBack: () -> Unit) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = latText,
-                        onValueChange = {
-                            latText = it
-                            it.replace(',', '.').toDoubleOrNull()?.let { value -> prefs.lat = value }
+                        onValueChange = { typed ->
+                            latText = typed
+                            val value = Coordinates.parseLatitude(typed)
+                            if (value == null) {
+                                message = null
+                                coordError = "Latitude must be between -90 and 90. Home location is still " +
+                                    String.format(Locale.ROOT, "%.4f", prefs.lat) + "."
+                            } else {
+                                prefs.lat = value
+                                coordError = null
+                                message = "Home location updated to " +
+                                    String.format(Locale.ROOT, "%.4f, %.4f", prefs.lat, prefs.lon)
+                            }
                         },
                         label = { Text("Latitude") },
                         singleLine = true,
@@ -168,13 +183,31 @@ fun SettingsScreen(onBack: () -> Unit) {
                     )
                     OutlinedTextField(
                         value = lonText,
-                        onValueChange = {
-                            lonText = it
-                            it.replace(',', '.').toDoubleOrNull()?.let { value -> prefs.lon = value }
+                        onValueChange = { typed ->
+                            lonText = typed
+                            val value = Coordinates.parseLongitude(typed)
+                            if (value == null) {
+                                message = null
+                                coordError = "Longitude must be between -180 and 180. Home location is still " +
+                                    String.format(Locale.ROOT, "%.4f", prefs.lon) + "."
+                            } else {
+                                prefs.lon = value
+                                coordError = null
+                                message = "Home location updated to " +
+                                    String.format(Locale.ROOT, "%.4f, %.4f", prefs.lat, prefs.lon)
+                            }
                         },
                         label = { Text("Longitude") },
                         singleLine = true,
                         modifier = Modifier.weight(1f),
+                    )
+                }
+                coordError?.let {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
                     )
                 }
                 Spacer(Modifier.height(8.dp))
@@ -242,11 +275,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                     style = MaterialTheme.typography.labelSmall,
                 )
                 Spacer(Modifier.height(6.dp))
-                TextButton(onClick = {
-                    prefs.token = null
-                    prefs.deviceId = 0
-                    message = "Device reset; a new identity will be created next time"
-                }) { Text("Reset device identity") }
+                TextButton(onClick = { confirmReset = true }) { Text("Reset device identity") }
             }
 
             SectionCard(title = "Advanced") {
@@ -371,6 +400,31 @@ fun SettingsScreen(onBack: () -> Unit) {
             ErrorBar(error)
             Spacer(Modifier.height(70.dp))
         }
+    }
+
+    if (confirmReset) {
+        AlertDialog(
+            onDismissRequest = { confirmReset = false },
+            title = { Text("Reset device identity?") },
+            text = {
+                Text(
+                    "This device will get a new anonymous identity. Your price alerts, " +
+                        "caffeine log and contribution history stay with the old identity " +
+                        "and cannot be recovered.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    prefs.token = null
+                    prefs.deviceId = 0
+                    confirmReset = false
+                    message = "Device reset; a new identity will be created next time"
+                }) { Text("Reset") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmReset = false }) { Text("Cancel") }
+            },
+        )
     }
 
     if (picker) {

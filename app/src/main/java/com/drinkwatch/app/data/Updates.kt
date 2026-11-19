@@ -24,8 +24,9 @@ data class AppUpdate(
     val apkUrl: String,
 )
 
-/** What an APK claims about itself: the two things the installer checks before it replaces anything. */
+/** What an APK claims about itself: the three things the installer checks before it replaces anything. */
 data class ApkIdentity(
+    val packageName: String,
     val versionCode: Int,
     /** Sorted, comma-joined SHA-256 of the signing certificates; null when unreadable. */
     val signerSha256: String?,
@@ -40,9 +41,10 @@ sealed interface InstallVerdict {
  * Decide whether a downloaded APK may be handed to the system installer.
  *
  * The publisher is supposed to refuse a debug-signed or stale APK, but the device is
- * the last gate: the installer answers a foreign key with INSTALL_FAILED_UPDATE_INCOMPATIBLE
- * and leaves the app stuck, and the uninstall that follows wipes the token, watchlist,
- * basket and alerts (allowBackup is off). Refusing here names the cause instead.
+ * the last gate: the installer answers a foreign key or package with
+ * INSTALL_FAILED_UPDATE_INCOMPATIBLE and leaves the app stuck, and the uninstall that
+ * follows wipes the token, watchlist, basket and alerts (allowBackup is off). Refusing
+ * here names the cause instead.
  *
  * A file we cannot inspect at all is left to the installer: the checks below are the
  * ones that would otherwise fail late and confusingly, so they must not invent a
@@ -53,8 +55,13 @@ fun installVerdict(
     candidate: ApkIdentity,
     advertisedCode: Int,
 ): InstallVerdict = when {
-    candidate.versionCode < advertisedCode -> InstallVerdict.Rejected(
-        "The published APK is older than its version.json — not installing it",
+    candidate.packageName != installed.packageName -> InstallVerdict.Rejected(
+        "The downloaded file is " + candidate.packageName + ", not " + installed.packageName +
+            " — not installing it",
+    )
+    candidate.versionCode != advertisedCode -> InstallVerdict.Rejected(
+        "The downloaded APK is build " + candidate.versionCode + " but version.json advertised " +
+            advertisedCode + " — not installing it",
     )
     candidate.versionCode <= installed.versionCode -> InstallVerdict.Rejected(
         "The published APK is not newer than the installed app — not installing it",
@@ -196,12 +203,14 @@ class UpdateController(private val context: Context) {
     @Suppress("DEPRECATION")
     private fun identityOf(info: PackageInfo?): ApkIdentity? {
         if (info == null) return null
+        val name = info.packageName ?: return null
         val certificates = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             info.signingInfo?.apkContentsSigners?.map { it.toByteArray() }
         } else {
             info.signatures?.map { it.toByteArray() }
         } ?: emptyList()
         return ApkIdentity(
+            packageName = name,
             versionCode = PackageInfoCompat.getLongVersionCode(info).toInt(),
             signerSha256 = signerFingerprint(certificates),
         )
