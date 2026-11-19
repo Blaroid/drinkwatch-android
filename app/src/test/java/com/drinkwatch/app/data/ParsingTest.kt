@@ -528,4 +528,57 @@ class ParsingTest {
         assertEquals("oops", errorMessage("oops", "Internal Server Error"))
         assertEquals("Service Unavailable", errorMessage("", "Service Unavailable"))
     }
+
+    // The release key's fingerprint, shortened; the gate only ever compares strings.
+    private val releaseKey = ApkIdentity(versionCode = 14, signerSha256 = "d6527d06")
+
+    @Test
+    fun `install gate accepts a newer build from the same key`() {
+        val candidate = ApkIdentity(versionCode = 15, signerSha256 = "D6527D06")
+        assertEquals(InstallVerdict.Installable, installVerdict(releaseKey, candidate, advertisedCode = 15))
+    }
+
+    @Test
+    fun `install gate refuses the debug key`() {
+        // This is the audited failure: a build machine without keystore.properties
+        // produced a debug-signed "release", and the installer cannot replace the app.
+        val candidate = ApkIdentity(versionCode = 15, signerSha256 = "fe7407e2")
+        val verdict = installVerdict(releaseKey, candidate, advertisedCode = 15)
+        assertTrue(verdict is InstallVerdict.Rejected)
+        assertTrue((verdict as InstallVerdict.Rejected).message.contains("different key"))
+    }
+
+    @Test
+    fun `install gate refuses an APK that is not newer than the install`() {
+        val same = ApkIdentity(versionCode = 14, signerSha256 = "d6527d06")
+        assertTrue(installVerdict(releaseKey, same, advertisedCode = 14) is InstallVerdict.Rejected)
+        val older = ApkIdentity(versionCode = 13, signerSha256 = "d6527d06")
+        assertTrue(installVerdict(releaseKey, older, advertisedCode = 13) is InstallVerdict.Rejected)
+    }
+
+    @Test
+    fun `install gate refuses an APK older than the metadata that advertised it`() {
+        // version.json said 15 but the bytes served are 14: the installer would fail.
+        val stale = ApkIdentity(versionCode = 14, signerSha256 = "d6527d06")
+        assertTrue(installVerdict(releaseKey, stale, advertisedCode = 15) is InstallVerdict.Rejected)
+    }
+
+    @Test
+    fun `install gate falls through when a signer or version cannot be read`() {
+        val unknownSigner = ApkIdentity(versionCode = 15, signerSha256 = null)
+        assertEquals(InstallVerdict.Installable, installVerdict(releaseKey, unknownSigner, 15))
+        val unknownInstalled = ApkIdentity(versionCode = 14, signerSha256 = null)
+        assertEquals(InstallVerdict.Installable, installVerdict(unknownInstalled, unknownSigner, 15))
+    }
+
+    @Test
+    fun `signer fingerprint is a sorted sha256 of each certificate`() {
+        val a = "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
+        val b = "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d"
+        assertEquals(a, signerFingerprint(listOf(byteArrayOf('a'.code.toByte()))))
+        // 3e… sorts before ca…, so passing them in either order gives the same string.
+        assertEquals("$b,$a", signerFingerprint(listOf(byteArrayOf('b'.code.toByte()), byteArrayOf('a'.code.toByte()))))
+        assertEquals("$b,$a", signerFingerprint(listOf(byteArrayOf('a'.code.toByte()), byteArrayOf('b'.code.toByte()))))
+        assertNull(signerFingerprint(emptyList()))
+    }
 }

@@ -114,10 +114,12 @@ is backed up to the redmax disk.
 ## Releasing
 
 1. Bump `versionCode` and `versionName` in `app/build.gradle.kts`.
-2. `./scripts/build.sh assembleRelease`
-3. Copy `app/build/outputs/apk/release/app-release.apk` to the server's
-   `~/drinkwatch/apk/drinkwatch.apk` and update `version.json` there.
-4. The API serves it at `/app` (install page), `/app/drinkwatch.apk` and
+2. `./scripts/publish.sh "release notes" [apk-dir]` — builds, reads the version back out of
+   the APK, refuses an APK whose signer is not the key in `keystore.properties` or whose
+   `versionCode` is not above the published one, then writes both files atomically with
+   `version.json` last. A release build without the keystore now fails instead of being
+   debug-signed.
+3. The API serves it at `/app` (install page), `/app/drinkwatch.apk` and
    `/app/version.json`.
 
 ## Version history
