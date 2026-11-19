@@ -9,12 +9,10 @@ import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
 class ApiException(message: String, val code: Int = 0) : Exception(message)
 
@@ -24,13 +22,14 @@ class ApiException(message: String, val code: Int = 0) : Exception(message)
  * JSON is parsed by hand with org.json: the payloads are small, and this keeps the
  * app free of serialization plugins/codegen.
  */
-class Api(private val prefs: Prefs) {
+class Api(
+    private val prefs: Prefs,
+    /** Where the response cache lives; null disables caching (tests). */
+    cacheDir: java.io.File? = null,
+) {
 
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(35, TimeUnit.SECONDS)
-        .callTimeout(70, TimeUnit.SECONDS)
-        .build()
+    private val transport = HttpTransport(cacheDir)
+    private val client = transport.http
 
     private val jsonType = "application/json; charset=utf-8".toMediaType()
     private val jpegType = "image/jpeg".toMediaType()
@@ -45,7 +44,7 @@ class Api(private val prefs: Prefs) {
         return url.build()
     }
 
-    private fun execute(request: Request): String = client.newCall(request).execute().use { response ->
+    private fun execute(request: Request): String = transport.call(request).use { response ->
         val body = response.body?.string() ?: ""
         if (!response.isSuccessful) {
             val detail = runCatching { JSONObject(body).optString("detail") }.getOrNull()
