@@ -15,7 +15,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -41,13 +40,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.drinkwatch.app.data.AppNotification
 import com.drinkwatch.app.data.CaffeineToday
-import com.drinkwatch.app.data.Price
 import com.drinkwatch.app.data.PriceAlert
 import com.drinkwatch.app.data.Product
 import com.drinkwatch.app.data.ServiceLocator
 import com.drinkwatch.app.ui.components.ErrorBar
 import com.drinkwatch.app.ui.components.LoadingRow
-import com.drinkwatch.app.ui.components.MoneyField
+import com.drinkwatch.app.ui.components.NewAlertDialog
 import com.drinkwatch.app.ui.components.PrimaryButton
 import com.drinkwatch.app.ui.components.ProductPickerDialog
 import com.drinkwatch.app.ui.components.SectionCard
@@ -169,8 +167,7 @@ fun YouScreen(onOpenSettings: () -> Unit = {}) {
                                 style = MaterialTheme.typography.bodySmall,
                             )
                             Text(
-                                "under " + Price.aud(alert.maxPriceCents) +
-                                    (alert.chainCode?.let { " at " + it } ?: ""),
+                                alert.summary(),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -223,31 +220,18 @@ fun YouScreen(onOpenSettings: () -> Unit = {}) {
     }
 
     alertFor?.let { product ->
-        var threshold by remember(product.slug) { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = { alertFor = null },
-            title = { Text("Alert me when it drops") },
-            text = {
-                Column {
-                    Text("Notify me when " + product.label() + " is under:", style = MaterialTheme.typography.bodySmall)
-                    Spacer(Modifier.height(8.dp))
-                    MoneyField(threshold, { threshold = it }, "Price")
+        NewAlertDialog(
+            productSlug = product.slug,
+            productLabel = product.label(),
+            prefs = prefs,
+            onDismiss = { alertFor = null },
+            onSubmit = { request ->
+                scope.launch {
+                    runCatching { api.createAlert(request) }
+                        .onSuccess { alertFor = null; load() }
+                        .onFailure { error = it.message }
                 }
             },
-            confirmButton = {
-                TextButton(
-                    enabled = Price.parseToCents(threshold) != null,
-                    onClick = {
-                        val cents = Price.parseToCents(threshold) ?: return@TextButton
-                        scope.launch {
-                            runCatching { api.createAlert(product.slug, cents) }
-                                .onSuccess { alertFor = null; load() }
-                                .onFailure { error = it.message }
-                        }
-                    },
-                ) { Text("Set alert") }
-            },
-            dismissButton = { TextButton(onClick = { alertFor = null }) { Text("Cancel") } },
         )
     }
 
