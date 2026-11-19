@@ -14,6 +14,8 @@ securityCrypto = "1.1.0-alpha06"
 mlkitText = "19.0.1"
 codeScanner = "16.1.0"
 exif = "1.3.7"
+# Test-only: the JVM unit-test stub of android.jar has no working org.json.
+orgJson = "20240303"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -39,6 +41,7 @@ androidx-security-crypto = { group = "androidx.security", name = "security-crypt
 mlkit-text-recognition = { group = "com.google.android.gms", name = "play-services-mlkit-text-recognition", version.ref = "mlkitText" }
 play-services-code-scanner = { group = "com.google.android.gms", name = "play-services-code-scanner", version.ref = "codeScanner" }
 androidx-exifinterface = { group = "androidx.exifinterface", name = "exifinterface", version.ref = "exif" }
+org-json = { group = "org.json", name = "json", version.ref = "orgJson" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
