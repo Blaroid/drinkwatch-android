@@ -25,8 +25,11 @@ distance and how old the price is. Tap a row for every store's price, "Navigate"
 
 **Add** - three ways to contribute:
 
-* **Barcode** - Play Services code scanner, or type the digits. Unknown barcodes
-  open a "new can" form (name, brand, size) that queues the product for review.
+* **Barcode** - Play Services code scanner, or type the digits. A known can goes
+  straight to "what did you pay?", with the drink and store already filled in.
+  Unknown barcodes open a "new can" form that completes the name and size from the
+  catalogue as you type (and from Open Food Facts when it knows the code), then
+  drops you into the price form for that can.
 * **Price tag** - photograph the shelf/fridge tag; ML Kit reads the text on device
   and a heuristic picks the sell price (skipping "was/save" and `$7.00 / 1L` unit
   prices). The photo is uploaded as evidence.
@@ -127,6 +130,7 @@ is backed up to the redmax disk.
 | 0.3.3 | reload on resume; refresh right after tracking |
 | 0.3.4 | picker rows show the clean label only |
 | 0.4.0 | self-update: launch prompt + "Check for updates" in Settings; Settings reachable from the You tab |
+| 0.4.1 | barcode flow: name/size autocomplete for new cans, and a second scan of a known can goes straight to the price prompt |
 | 0.5.0 | merge train: HTTP cache + ETag revalidation, watchlist recovery after a renamed drink, alert notifications actually posted, alert location filter, basket totals include fuel |
 
 ## Privacy

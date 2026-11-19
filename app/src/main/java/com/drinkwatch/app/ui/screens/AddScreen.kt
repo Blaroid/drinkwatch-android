@@ -3,6 +3,7 @@ package com.drinkwatch.app.ui.screens
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -34,6 +35,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -82,6 +84,13 @@ fun AddScreen() {
     var productPicker by remember { mutableStateOf(false) }
     var storePicker by remember { mutableStateOf(false) }
     var pendingDialog by remember { mutableStateOf(false) }
+    // What the last scan resolved to, so scanning a second can of the same drink
+    // lands the user straight in the price form instead of appearing to do nothing.
+    var knownBarcode by remember { mutableStateOf<String?>(null) }
+    var suggestionName by remember { mutableStateOf<String?>(null) }
+    var suggestionBrand by remember { mutableStateOf<String?>(null) }
+    var focusPrice by remember { mutableStateOf(false) }
+    val priceFocus = remember { androidx.compose.ui.focus.FocusRequester() }
 
     fun lookup(code: String) {
         if (code.isBlank()) return
@@ -91,18 +100,38 @@ fun AddScreen() {
             status = null
             runCatching { api.barcode(code) }
                 .onSuccess { hit ->
-                    if (hit.product != null) {
-                        product = hit.product
+                    val found = hit.product
+                    if (found != null) {
+                        // Known can: this is the common case on a second scan, and it
+                        // must ask for price + store with the identity already filled.
+                        product = found
                         unknownBarcode = null
-                        status = null
+                        knownBarcode = hit.barcode
+                        barcodeText = hit.barcode
+                        priceText = ""
+                        note = ""
+                        promo = "none"
+                        photoBytes = null
+                        ocrText = null
+                        status = "That is " + found.label() + ". What did you pay?"
+                        focusPrice = true
                     } else {
                         unknownBarcode = code
+                        suggestionName = hit.suggestedName
+                        suggestionBrand = hit.suggestedBrand
                         pendingDialog = true
                     }
                 }
                 .onFailure { error = it.message }
             busy = false
         }
+    }
+
+    androidx.compose.runtime.LaunchedEffect(focusPrice) {
+        if (!focusPrice) return@LaunchedEffect
+        focusPrice = false
+        kotlinx.coroutines.delay(150)
+        runCatching { priceFocus.requestFocus() }
     }
 
     val scanner = remember { GmsBarcodeScanning.getClient(context) }
@@ -272,6 +301,14 @@ fun AddScreen() {
                 AddMode.Manual -> Spacer(Modifier.height(0.dp))
             }
 
+            knownBarcode?.let { code ->
+                Text(
+                    "Barcode " + code,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
             SectionCard(title = "What did you find?") {
                 if (product != null) {
                     Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
@@ -286,7 +323,12 @@ fun AddScreen() {
                     ) { Text("Choose drink") }
                 }
                 Spacer(Modifier.height(10.dp))
-                MoneyField(priceText, { priceText = it }, "Price on the tag")
+                MoneyField(
+                    priceText,
+                    { priceText = it },
+                    "Price on the tag",
+                    modifier = Modifier.focusRequester(priceFocus),
+                )
                 Spacer(Modifier.height(10.dp))
                 if (store != null) {
                     Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
@@ -359,12 +401,17 @@ fun AddScreen() {
     if (pendingDialog && unknownBarcode != null) {
         NewProductDialog(
             barcode = unknownBarcode!!,
+            suggestedName = suggestionName,
+            suggestedBrand = suggestionBrand,
             api = api,
             prefs = prefs,
             onDismiss = { pendingDialog = false },
-            onDone = { message ->
+            onDone = { added, message ->
                 pendingDialog = false
+                product = added
+                knownBarcode = unknownBarcode
                 status = message
+                focusPrice = true
             },
         )
     }
@@ -373,20 +420,36 @@ fun AddScreen() {
 @Composable
 private fun NewProductDialog(
     barcode: String,
+    suggestedName: String?,
+    suggestedBrand: String?,
     api: Api,
     prefs: Prefs,
     onDismiss: () -> Unit,
-    onDone: (String) -> Unit,
+    onDone: (Product, String) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
-    var name by remember { mutableStateOf("") }
-    var brand by remember { mutableStateOf("") }
-    var size by remember { mutableStateOf("") }
+    // Open Food Facts occasionally knows the can before we do; start from that.
+    var name by remember { mutableStateOf(suggestedName.orEmpty()) }
+    var brand by remember { mutableStateOf(suggestedBrand.orEmpty()) }
+    var size by remember { mutableStateOf(sizeFromName(suggestedName.orEmpty())) }
+    var sizeEdited by remember { mutableStateOf(false) }
     var price by remember { mutableStateOf("") }
     var store by remember { mutableStateOf<Store?>(null) }
     var storePicker by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var matches by remember { mutableStateOf<List<Product>>(emptyList()) }
+
+    // Live completion against the catalogue: the fastest way to say "it is this
+    // one" without retyping a name we already know.
+    androidx.compose.runtime.LaunchedEffect(name) {
+        if (name.trim().length < 2) {
+            matches = emptyList()
+            return@LaunchedEffect
+        }
+        kotlinx.coroutines.delay(300)
+        matches = runCatching { api.searchProducts(name.trim(), 6) }.getOrDefault(emptyList())
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -399,11 +462,41 @@ private fun NewProductDialog(
                 )
                 OutlinedTextField(
                     value = name,
-                    onValueChange = { name = it.take(160) },
+                    onValueChange = { typed ->
+                        name = typed.take(160)
+                        if (!sizeEdited) size = sizeFromName(typed)
+                    },
                     label = { Text("Name on the can") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                // Suggestions: tap one to adopt its brand and size.
+                matches.take(4).forEach { candidate ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                name = candidate.label()
+                                brand = candidate.brand
+                                size = candidate.sizeMl?.toString() ?: size
+                                sizeEdited = true
+                                matches = emptyList()
+                            }
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            candidate.label(),
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            "use",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = brand,
@@ -414,7 +507,10 @@ private fun NewProductDialog(
                     )
                     OutlinedTextField(
                         value = size,
-                        onValueChange = { size = it.filter { ch -> ch.isDigit() } },
+                        onValueChange = {
+                            size = it.filter { ch -> ch.isDigit() }
+                            sizeEdited = true
+                        },
                         label = { Text("ml") },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -425,7 +521,9 @@ private fun NewProductDialog(
                 OutlinedButton(onClick = { storePicker = true }, modifier = Modifier.fillMaxWidth()) {
                     Text(store?.name ?: "Store (optional)")
                 }
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall) }
+                error?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+                }
             }
         },
         confirmButton = {
@@ -446,13 +544,34 @@ private fun NewProductDialog(
                                 priceCents = Price.parseToCents(price),
                                 photoToken = null,
                             )
-                        }.onSuccess {
-                            onDone("Added " + name + " to the catalogue. Thanks!")
+                        }.onSuccess { response ->
+                            val added = response.optJSONObject("product")
+                            val product = added?.let { json ->
+                                Product(
+                                    id = json.optInt("id"),
+                                    slug = json.optString("slug"),
+                                    brand = json.optString("brand"),
+                                    name = json.optString("name"),
+                                    variant = if (json.isNull("variant")) null else json.optString("variant"),
+                                    sizeMl = if (json.isNull("size_ml")) null else json.optInt("size_ml"),
+                                    packCount = json.optInt("pack_count", 1),
+                                    barcode = if (json.isNull("barcode")) null else json.optString("barcode"),
+                                    category = json.optString("category", "energy"),
+                                )
+                            }
+                            if (product != null) {
+                                onDone(product, "Added " + product.label() + ". What did you pay?")
+                            } else {
+                                onDone(
+                                    Product(0, "", brand, name, null, size.toIntOrNull(), 1, null, "energy"),
+                                    "Added " + name + ". What did you pay?",
+                                )
+                            }
                         }.onFailure { error = it.message }
                         busy = false
                     }
                 },
-            ) { Text("Add") }
+            ) { Text(if (busy) "Adding…" else "Add and enter price") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
@@ -467,4 +586,12 @@ private fun NewProductDialog(
             },
         )
     }
+}
+
+/** Pull "500ml" or "4 x 500ml" out of whatever the label says. */
+private fun sizeFromName(text: String): String {
+    val multi = Regex("""(\d{1,2})\s*[x×]\s*(\d{2,4})\s*ml""", RegexOption.IGNORE_CASE).find(text)
+    if (multi != null) return multi.groupValues[2]
+    val single = Regex("""(\d{2,4})\s*ml""", RegexOption.IGNORE_CASE).find(text)
+    return single?.groupValues?.get(1) ?: ""
 }
