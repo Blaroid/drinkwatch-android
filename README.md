@@ -139,6 +139,7 @@ is backed up to the redmax disk.
 | 0.5.1 | barcode price entry is a popup with the can prefilled and the field focused; save confirmation is a toast |
 | 0.5.2 | fix: gallery price-tag photos are OCR'd (the copy raced the decode); OCR problems show a toast |
 | 0.6.0 | bundled ML Kit text recognition, so the price-tag scan works offline |
+| 0.7.0 | merge train: device-token recovery, honest widget timestamps during an outage, alerts survive blocked notifications, basket limits match the API, releases refuse the debug key |
 | 0.5.0 | merge train: HTTP cache + ETag revalidation, watchlist recovery after a renamed drink, alert notifications actually posted, alert location filter, basket totals include fuel |
 
 ## Privacy
