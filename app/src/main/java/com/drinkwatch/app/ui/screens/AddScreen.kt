@@ -179,6 +179,18 @@ fun AddScreen() {
             Ocr.readTag(bitmap) { cents, text ->
                 scope.launch(kotlinx.coroutines.Dispatchers.Main) {
                     ocrText = text.take(200)
+                    // A tag photo names the drink too: match the words against the
+                    // catalogue and preselect it, so the picker is one tap away.
+                    if (text.isNotBlank()) {
+                        val words = text.lowercase()
+                        runCatching { api.searchProducts(text.take(60), 8) }
+                            .getOrDefault(emptyList())
+                            .firstOrNull { candidate ->
+                                words.contains(candidate.brand.lowercase()) &&
+                                    (candidate.sizeMl == null || words.contains(candidate.sizeMl.toString()))
+                            }
+                            ?.let { product = it }
+                    }
                     when {
                         cents != null -> priceText = String.format(java.util.Locale.US, "%.2f", cents / 100.0)
                         text.isBlank() -> reportPhotoProblem("Couldn't read that tag — type the price instead")
