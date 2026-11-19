@@ -48,4 +48,48 @@ class ParsingTest {
         assertNull(Ocr.parsePrice("500ml\n32mg/100ml\n2024"))
         assertNull(Ocr.parsePrice(""))
     }
+
+    @Test
+    fun `prunes only the slug the server names`() {
+        val slugs = listOf("v-blue", "monster-ultra", "red-bull-250ml")
+        assertEquals(
+            listOf("v-blue", "red-bull-250ml"),
+            pruneStale(slugs, "unknown product slug: monster-ultra"),
+        )
+        assertEquals(
+            listOf("monster-ultra", "red-bull-250ml"),
+            pruneStale(slugs, " unknown product slug: v-blue "),
+        )
+    }
+
+    @Test
+    fun `prunes nothing it cannot identify`() {
+        val slugs = listOf("v-blue", "monster-ultra")
+        // A slug we never sent, a generic 404 and a missing detail must all leave the
+        // list alone: deleting the wrong drink is worse than a default list for a run.
+        assertEquals(slugs, pruneStale(slugs, "unknown product slug: something-else"))
+        assertEquals(slugs, pruneStale(slugs, "Not Found"))
+        assertEquals(slugs, pruneStale(slugs, null))
+        assertEquals(emptyList<String>(), pruneStale(emptyList(), "unknown product slug: v-blue"))
+    }
+
+    @Test
+    fun `stale note names what was dropped`() {
+        assertEquals(
+            "V Blue is no longer listed — removed from your drinks",
+            staleNote(listOf("v-blue"), mapOf("v-blue" to "V Blue")),
+        )
+        assertEquals(
+            "V Blue and Red Bull 250ml are no longer listed — removed from your drinks",
+            staleNote(
+                listOf("v-blue", "red-bull-250ml"),
+                mapOf("v-blue" to "V Blue", "red-bull-250ml" to "Red Bull 250ml"),
+            ),
+        )
+        assertEquals(
+            "v blue, monster ultra and red bull are no longer listed — removed from your drinks",
+            staleNote(listOf("v-blue", "monster-ultra", "red-bull"), emptyMap()),
+        )
+        assertNull(staleNote(emptyList(), emptyMap()))
+    }
 }

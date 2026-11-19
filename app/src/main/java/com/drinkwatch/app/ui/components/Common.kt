@@ -140,6 +140,30 @@ fun ErrorBar(message: String?, onRetry: (() -> Unit)? = null) {
     }
 }
 
+/** A one-off explanation that is not an error, e.g. a followed drink disappeared. */
+@Composable
+fun NoteBar(message: String?, onDismiss: (() -> Unit)? = null) {
+    if (message == null) return
+    Surface(
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                modifier = Modifier.weight(1f).padding(vertical = 6.dp),
+            )
+            if (onDismiss != null) TextButton(onClick = onDismiss) { Text("Dismiss") }
+        }
+    }
+}
+
 @Composable
 fun MoneyField(
     value: String,

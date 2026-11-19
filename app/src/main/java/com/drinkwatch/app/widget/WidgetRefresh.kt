@@ -21,7 +21,6 @@ import com.drinkwatch.app.data.Api
 import com.drinkwatch.app.data.ServiceLocator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
@@ -60,9 +59,9 @@ class WidgetWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         val api = ServiceLocator.api(applicationContext)
 
         val fetch = runCatching {
-            val payload = api.widget(prefs.lat, prefs.lon, prefs.radiusKm, prefs.trackedSlugs)
-            prefs.widgetCache = payload.toString()
-            prefs.widgetCacheAt = System.currentTimeMillis()
+            // Same path as the screens: a renamed tracked drink is pruned and
+            // retried instead of failing every run forever.
+            api.widgetItems(prefs.lat, prefs.lon, prefs.radiusKm, prefs.trackedSlugs, cache = true)
         }
 
         runCatching { PriceWidget().updateAll(applicationContext) }

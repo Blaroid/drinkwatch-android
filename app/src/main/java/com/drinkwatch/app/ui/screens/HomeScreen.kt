@@ -71,6 +71,7 @@ import com.drinkwatch.app.ui.components.DealChip
 import com.drinkwatch.app.ui.components.ErrorBar
 import com.drinkwatch.app.ui.components.LoadingRow
 import com.drinkwatch.app.ui.components.MoneyField
+import com.drinkwatch.app.ui.components.NoteBar
 import com.drinkwatch.app.widget.WidgetRefresh
 import kotlinx.coroutines.launch
 
@@ -85,6 +86,7 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
     var items by remember { mutableStateOf<List<WidgetItem>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
+    var note by remember { mutableStateOf(prefs.trackedNote) }
     var detailSlug by remember { mutableStateOf<String?>(null) }
     var locationTitle by remember { mutableStateOf(prefs.locationTitle()) }
     var locating by remember { mutableStateOf(false) }
@@ -104,6 +106,7 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
                 )
             }.onSuccess {
                 items = it
+                note = prefs.trackedNote
                 WidgetRefresh.refreshNow(context)
             }.onFailure {
                 error = it.message
@@ -177,6 +180,14 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             error?.let { Box(Modifier.padding(horizontal = 16.dp)) { ErrorBar(it, onRetry = { load() }) } }
+            note?.let {
+                Box(Modifier.padding(horizontal = 16.dp)) {
+                    NoteBar(it, onDismiss = {
+                        prefs.trackedNote = null
+                        note = null
+                    })
+                }
+            }
             if (loading && items.isEmpty()) LoadingRow("Finding prices…")
             if (prefs.trackedSlugs.isEmpty() && items.isNotEmpty()) {
                 Text(
