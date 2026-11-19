@@ -10,11 +10,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -22,6 +24,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -37,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.drinkwatch.app.data.AlertGate
 import com.drinkwatch.app.data.AppNotification
@@ -68,6 +72,7 @@ fun YouScreen(onOpenSettings: () -> Unit = {}) {
     var alertsBlocked by remember { mutableStateOf(false) }
     var alertPicker by remember { mutableStateOf(false) }
     var caffeinePicker by remember { mutableStateOf(false) }
+    var otherDrink by remember { mutableStateOf(false) }
     var alertFor by remember { mutableStateOf<Product?>(null) }
 
     fun load() {
@@ -149,8 +154,13 @@ fun YouScreen(onOpenSettings: () -> Unit = {}) {
                     }
                 }
                 Spacer(Modifier.height(10.dp))
-                OutlinedButton(onClick = { caffeinePicker = true }, modifier = Modifier.fillMaxWidth()) {
-                    Text("I just drank one")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(onClick = { caffeinePicker = true }, modifier = Modifier.weight(1f)) {
+                        Text("I just drank one")
+                    }
+                    OutlinedButton(onClick = { otherDrink = true }, modifier = Modifier.weight(1f)) {
+                        Text("Other drink")
+                    }
                 }
             }
 
@@ -264,4 +274,75 @@ fun YouScreen(onOpenSettings: () -> Unit = {}) {
             },
         )
     }
+
+    if (otherDrink) {
+        OtherDrinkDialog(
+            onDismiss = { otherDrink = false },
+            onLog = { label, mg ->
+                otherDrink = false
+                scope.launch {
+                    // No product slug: the server takes a free-text label and the mg the
+                    // user read off the cup, so coffee, tea and one-offs can be logged.
+                    runCatching { api.logCaffeine(null, label, mg) }.onSuccess { load() }
+                        .onFailure { error = it.message }
+                }
+            },
+        )
+    }
+}
+
+/** Free-text caffeine entry for a drink the catalogue does not list. */
+@Composable
+private fun OtherDrinkDialog(onDismiss: () -> Unit, onLog: (label: String, mg: Int) -> Unit) {
+    var label by remember { mutableStateOf("") }
+    var mgText by remember { mutableStateOf("") }
+    val mg = mgText.toIntOrNull() ?: 0
+    val canLog = label.isNotBlank() && mg > 0
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Log another drink") },
+        text = {
+            Column {
+                Text(
+                    "Coffee, tea or anything not in the catalogue.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = label,
+                    onValueChange = { label = it },
+                    label = { Text("What did you drink?") },
+                    placeholder = { Text("barista flat white") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = mgText,
+                    onValueChange = { typed -> mgText = typed.filter { it.isDigit() }.take(4) },
+                    label = { Text("Caffeine (mg)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (mgText.isNotBlank() && mg == 0) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Enter the caffeine in milligrams (more than 0).",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { if (canLog) onLog(label.trim(), mg) },
+                enabled = canLog,
+            ) { Text("Log") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
