@@ -96,6 +96,43 @@ class ParsingTest {
         assertNull(staleNote(emptyList(), emptyMap()))
     }
 
+    @Test
+    fun `widget age counts the payload's own age`() {
+        val generatedAt = parseInstant("2026-11-19T03:54:09.332071Z")!!
+        val monthLater = generatedAt + 30L * 24 * 60 * 60 * 1000
+        // age_hours is frozen when the server builds the payload: 2 h then, 30 days
+        // and 2 h now. A cached copy must not keep claiming "2 h ago".
+        assertEquals("30 d ago", cachedAgeLabel(generatedAt, oldestAgeHours = 2.0, nowMillis = monthLater))
+        assertEquals("just now", cachedAgeLabel(generatedAt, oldestAgeHours = 0.0, nowMillis = generatedAt + 60_000))
+        // Nothing cached: the widget says "tap to open" instead of inventing an age.
+        assertNull(cachedAgeLabel(null, oldestAgeHours = 2.0, nowMillis = monthLater))
+    }
+
+    @Test
+    fun `cached widget keeps the payload timestamp`() {
+        val json = """
+            {"generated_at":"2026-11-19T03:54:09.332071Z","radius_km":15.0,"items":[
+              {"slug":"v-blue","label":"V Blue","price_cents":329,"store":"SpudShed Waterford",
+               "chain":"spudshed","promo":"special","source":"scrape","age_hours":1.7}]}
+        """.trimIndent()
+        val cache = Api.cachedWidget(json)
+        assertEquals("V Blue", cache.items.single().label)
+        assertEquals(parseInstant("2026-11-19T03:54:09.332071Z"), cache.generatedAt)
+        // An empty or corrupt copy must not crash the widget.
+        assertEquals(WidgetCache(emptyList(), null), Api.cachedWidget(null))
+        assertNull(Api.cachedWidget("{not json").generatedAt)
+    }
+
+    @Test
+    fun `parses the timestamps the api sends`() {
+        assertEquals(0L, parseInstant("1970-01-01T00:00:00Z"))
+        // A tz-aware variant must land on the same instant rather than be dropped.
+        assertEquals(0L, parseInstant("1970-01-01T10:00:00+10:00"))
+        assertNull(parseInstant(null))
+        assertNull(parseInstant(""))
+        assertNull(parseInstant("yesterday"))
+    }
+
     private fun note(id: Int) = AppNotification(
         id = id,
         kind = "price_alert",

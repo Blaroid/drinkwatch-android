@@ -110,6 +110,11 @@ class Prefs(context: Context) {
         get() = store.getString(KEY_WIDGET_CACHE, null)
         set(value) = store.edit().putString(KEY_WIDGET_CACHE, value).apply()
 
+    /**
+     * When the widget cache was last confirmed by the server. A copy served from the
+     * offline fallback deliberately leaves this alone, so the worker can tell a real
+     * refresh from a fallback and keep retrying while the prices stay old.
+     */
     var widgetCacheAt: Long
         get() = store.getLong(KEY_WIDGET_AT, 0L)
         set(value) = store.edit().putLong(KEY_WIDGET_AT, value).apply()
