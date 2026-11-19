@@ -20,6 +20,6 @@ object ServiceLocator {
 
     fun api(context: Context): Api =
         apiRef ?: synchronized(this) {
-            apiRef ?: Api(prefs(context)).also { apiRef = it }
+            apiRef ?: Api(prefs(context), context.applicationContext.cacheDir).also { apiRef = it }
         }
 }
