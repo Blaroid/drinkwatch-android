@@ -19,6 +19,15 @@ import java.time.OffsetDateTime
 class ApiException(message: String, val code: Int = 0) : Exception(message)
 
 /**
+ * What the user sees when a token registered a moment ago is refused as well.
+ *
+ * The server detail ("unknown device token; register first") names an internal
+ * concept and suggests nothing the user can do, so it is replaced once the
+ * automatic recovery has already been tried.
+ */
+private const val EXPIRED_DEVICE = "Device identity expired — tap Retry to register again"
+
+/**
  * Thin OkHttp wrapper over the DrinkWatch API.
  *
  * JSON is parsed by hand with org.json: the payloads are small, and this keeps the
@@ -61,6 +70,50 @@ class Api(
         Fetched(body, result.stale)
     }
 
+    /**
+     * Run one request, healing a device token the server no longer knows.
+     *
+     * A restored backup, a rebuilt backend or a deleted device row leaves a token
+     * the API answers `401 {"detail":"unknown device token; register first"}` to,
+     * which used to leave alerts, the caffeine log and crowd submissions dead until
+     * the user found Settings -> "Reset device identity". Dropping the stored
+     * identity and registering once is exactly what that button does, so the app can
+     * do it itself; [deviceRecovery] keeps the second 401 from turning into a loop.
+     */
+    private suspend fun <T> withDevice(auth: Boolean, block: suspend () -> T): T {
+        var attempt = 0
+        while (true) {
+            val attempted = prefs.token
+            try {
+                return block()
+            } catch (error: ApiException) {
+                when (deviceRecovery(error.code, attempt, auth)) {
+                    DeviceRecovery.Fail -> throw error
+                    DeviceRecovery.ReRegister -> {
+                        renewDevice(attempted)
+                        attempt++
+                    }
+                    DeviceRecovery.Expired -> throw ApiException(EXPIRED_DEVICE, error.code)
+                }
+            }
+        }
+    }
+
+    /**
+     * Forget the token the server rejected and register a new one.
+     *
+     * Compared inside the mutex because several requests can hit 401 at once: only
+     * the first should re-register, the rest retry with the token it just stored
+     * rather than orphaning it with a second device.
+     */
+    private suspend fun renewDevice(rejected: String?): String = deviceMutex.withLock {
+        val current = prefs.token?.takeIf { it.isNotBlank() }
+        if (current != null && current != rejected) return@withLock current
+        prefs.token = null
+        prefs.deviceId = 0
+        registerDevice()
+    }
+
     private fun authHeader(request: Request.Builder, required: Boolean): Request.Builder {
         request.header("User-Agent", "DrinkWatch-Android/0.1")
         if (!required) return request
@@ -83,18 +136,22 @@ class Api(
         path: String,
         params: Map<String, String?> = emptyMap(),
         auth: Boolean = false,
-    ): Fetched = withContext(Dispatchers.IO) {
-        val request = authHeader(Request.Builder().url(URL(path, params)).get(), auth).build()
-        execute(request)
+    ): Fetched = withDevice(auth) {
+        withContext(Dispatchers.IO) {
+            val request = authHeader(Request.Builder().url(URL(path, params)).get(), auth).build()
+            execute(request)
+        }
     }
 
     private suspend fun getArray(
         path: String,
         params: Map<String, String?> = emptyMap(),
         auth: Boolean = false,
-    ): JSONArray = withContext(Dispatchers.IO) {
-        val request = authHeader(Request.Builder().url(URL(path, params)).get(), auth).build()
-        JSONArray(execute(request).body)
+    ): JSONArray = withDevice(auth) {
+        withContext(Dispatchers.IO) {
+            val request = authHeader(Request.Builder().url(URL(path, params)).get(), auth).build()
+            JSONArray(execute(request).body)
+        }
     }
 
     private suspend fun postJson(
@@ -102,17 +159,21 @@ class Api(
         body: JSONObject,
         auth: Boolean = true,
         params: Map<String, String?> = emptyMap(),
-    ): JSONObject = withContext(Dispatchers.IO) {
-        val request = authHeader(
-            Request.Builder().url(URL(path, params)).post(body.toString().toRequestBody(jsonType)),
-            auth,
-        ).build()
-        JSONObject(execute(request).body)
+    ): JSONObject = withDevice(auth) {
+        withContext(Dispatchers.IO) {
+            val request = authHeader(
+                Request.Builder().url(URL(path, params)).post(body.toString().toRequestBody(jsonType)),
+                auth,
+            ).build()
+            JSONObject(execute(request).body)
+        }
     }
 
-    private suspend fun deleteJson(path: String): JSONObject = withContext(Dispatchers.IO) {
-        val request = authHeader(Request.Builder().url(URL(path, emptyMap())).delete(), true).build()
-        JSONObject(execute(request).body)
+    private suspend fun deleteJson(path: String): JSONObject = withDevice(true) {
+        withContext(Dispatchers.IO) {
+            val request = authHeader(Request.Builder().url(URL(path, emptyMap())).delete(), true).build()
+            JSONObject(execute(request).body)
+        }
     }
 
     // ---------------------------------------------------------------- device
@@ -292,13 +353,15 @@ class Api(
 
     // ---------------------------------------------------------------- writes
 
-    suspend fun uploadPhoto(bytes: ByteArray): String = withContext(Dispatchers.IO) {
-        val body = MultipartBody.Builder()
-            .setType(MultipartBody.FORM)
-            .addFormDataPart("file", "tag.jpg", bytes.toRequestBody(jpegType))
-            .build()
-        val request = authHeader(Request.Builder().url(URL("/v1/photos", emptyMap())).post(body), true).build()
-        JSONObject(execute(request).body).getString("token")
+    suspend fun uploadPhoto(bytes: ByteArray): String = withDevice(true) {
+        withContext(Dispatchers.IO) {
+            val body = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("file", "tag.jpg", bytes.toRequestBody(jpegType))
+                .build()
+            val request = authHeader(Request.Builder().url(URL("/v1/photos", emptyMap())).post(body), true).build()
+            JSONObject(execute(request).body).getString("token")
+        }
     }
 
     suspend fun submitObservation(
@@ -534,6 +597,28 @@ class Api(
             Log.w(TAG, where + " failed: " + throwable.message)
         }
     }
+}
+
+// ----------------------------------------------------------- device identity
+
+/** What an authenticated request should do after a failure. */
+internal enum class DeviceRecovery { Fail, ReRegister, Expired }
+
+/**
+ * Decide how an authenticated request recovers from a failed attempt.
+ *
+ * The API answers 401 when it has forgotten this device, and one re-registration
+ * fixes that. A 401 that survives a fresh token means the server is refusing the
+ * new identity too (or the token store is broken), so [Expired] replaces the raw
+ * detail with wording that points at a retry instead of looping.
+ *
+ * Public endpoints are exempt: there is no token to doubt, so a 401 there must
+ * never wipe the identity. [attempt] counts the retries already made by this call.
+ */
+internal fun deviceRecovery(status: Int, attempt: Int, auth: Boolean): DeviceRecovery = when {
+    !auth || status != 401 -> DeviceRecovery.Fail
+    attempt == 0 -> DeviceRecovery.ReRegister
+    else -> DeviceRecovery.Expired
 }
 
 // ------------------------------------------------------- stale tracked slugs

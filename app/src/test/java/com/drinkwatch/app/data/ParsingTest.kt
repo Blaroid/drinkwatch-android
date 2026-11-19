@@ -382,4 +382,27 @@ class ParsingTest {
         assertNull(Alerts.parseDropPercent("0"))
         assertNull(Alerts.parseDropPercent("91"))
     }
+
+    @Test
+    fun `a token the server forgot is replaced once`() {
+        // The API answers 401 for a token it does not know: clear and re-register.
+        assertEquals(DeviceRecovery.ReRegister, deviceRecovery(401, attempt = 0, auth = true))
+    }
+
+    @Test
+    fun `a 401 that survives re-registering is surfaced, not retried forever`() {
+        // The retry already used a fresh token, so a second 401 is not about this
+        // device's stored identity. Looping would register a new device each pass.
+        assertEquals(DeviceRecovery.Expired, deviceRecovery(401, attempt = 1, auth = true))
+        assertEquals(DeviceRecovery.Expired, deviceRecovery(401, attempt = 2, auth = true))
+    }
+
+    @Test
+    fun `only a 401 on an authenticated call is a device problem`() {
+        assertEquals(DeviceRecovery.Fail, deviceRecovery(404, attempt = 0, auth = true))
+        assertEquals(DeviceRecovery.Fail, deviceRecovery(500, attempt = 0, auth = true))
+        assertEquals(DeviceRecovery.Fail, deviceRecovery(403, attempt = 1, auth = true))
+        // Public endpoints send no token, so their 401 must not wipe the identity.
+        assertEquals(DeviceRecovery.Fail, deviceRecovery(401, attempt = 0, auth = false))
+    }
 }
