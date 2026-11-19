@@ -307,24 +307,14 @@ class Api(private val prefs: Prefs) {
     suspend fun alerts(): List<PriceAlert> {
         val array = getArray("/v1/alerts", auth = true)
         return (0 until array.length())
-            .map { index ->
-                val row = array.getJSONObject(index)
-                PriceAlert(
-                    id = row.getInt("id"),
-                    productId = if (row.isNull("product_id")) null else row.getInt("product_id"),
-                    familySlug = row.str("family_slug"),
-                    chainCode = row.str("chain_code"),
-                    storeId = if (row.isNull("store_id")) null else row.getInt("store_id"),
-                    maxPriceCents = row.getInt("max_price_cents"),
-                    isActive = row.optBoolean("is_active", true),
-                    createdAt = row.optString("created_at"),
-                )
-            }
+            .map { array.getJSONObject(it).toPriceAlert() }
             .filter { it.isActive }
     }
 
-    suspend fun createAlert(slug: String, maxPriceCents: Int) {
-        postJson("/v1/alerts", JSONObject().put("product_slug", slug).put("max_price_cents", maxPriceCents))
+    suspend fun createAlert(request: AlertRequest) {
+        val payload = JSONObject()
+        request.toFields().forEach { (key, value) -> payload.put(key, value) }
+        postJson("/v1/alerts", payload)
     }
 
     suspend fun deleteAlert(id: Int) {
@@ -607,6 +597,42 @@ internal fun JSONObject.toMaxCaffeine(): MaxCaffeine {
         exceedsDailyLimit = optBoolean("exceeds_daily_limit", false),
         storesUsed = optInt("stores_used", 1),
     )
+}
+
+internal fun JSONObject.toPriceAlert(): PriceAlert = PriceAlert(
+    id = getInt("id"),
+    productId = if (isNull("product_id")) null else getInt("product_id"),
+    familySlug = str("family_slug"),
+    chainCode = str("chain_code"),
+    storeId = if (isNull("store_id")) null else getInt("store_id"),
+    // Both triggers are nullable server-side, so an old alert can carry neither.
+    maxPriceCents = if (isNull("max_price_cents")) null else optInt("max_price_cents"),
+    minDropPercent = if (isNull("min_drop_percent")) null else optInt("min_drop_percent"),
+    lat = if (isNull("lat")) null else optDouble("lat"),
+    lon = if (isNull("lon")) null else optDouble("lon"),
+    radiusKm = if (isNull("radius_km")) null else optDouble("radius_km"),
+    isActive = optBoolean("is_active", true),
+    createdAt = optString("created_at"),
+)
+
+/**
+ * Body fields for POST /v1/alerts.
+ *
+ * Split out from the JSONObject so the shape can be unit tested. Two rules matter:
+ * the server wants lat, lon and radius_km together or not at all, and it rejects a
+ * request with neither max_price_cents nor min_drop_percent. Sending no location at
+ * all is what made alerts fire from the far side of the city, so the caller always
+ * passes the device's stored position.
+ */
+internal fun AlertRequest.toFields(): Map<String, Any> = buildMap {
+    put("product_slug", productSlug)
+    maxPriceCents?.let { put("max_price_cents", it) }
+    minDropPercent?.let { put("min_drop_percent", it) }
+    if (lat != null && lon != null && radiusKm != null) {
+        put("lat", lat)
+        put("lon", lon)
+        put("radius_km", radiusKm)
+    }
 }
 
 internal fun JSONObject.toRoutePlan(): RoutePlan {
