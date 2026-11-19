@@ -28,22 +28,27 @@ import com.drinkwatch.app.data.Api
 import com.drinkwatch.app.data.Price
 import com.drinkwatch.app.data.ServiceLocator
 import com.drinkwatch.app.data.WidgetItem
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import com.drinkwatch.app.data.cachedAgeLabel
 
 class PriceWidget : GlanceAppWidget() {
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val prefs = ServiceLocator.prefs(context)
-        val items = Api.itemsFromCache(prefs.widgetCache)
-        val updatedAt = prefs.widgetCacheAt.takeIf { it > 0L }
-        provideContent { WidgetBody(items, updatedAt) }
+        val cache = Api.cachedWidget(prefs.widgetCache)
+        // The header says how old the prices are, not when we last talked to the
+        // server: during an outage the copy on disk keeps its frozen age_hours, so
+        // a clock time there would read as a refresh that never happened.
+        val age = cachedAgeLabel(
+            generatedAt = cache.generatedAt,
+            oldestAgeHours = cache.items.maxOfOrNull { it.ageHours } ?: 0.0,
+            nowMillis = System.currentTimeMillis(),
+        )
+        provideContent { WidgetBody(cache.items, age) }
     }
 }
 
 @Composable
-private fun WidgetBody(items: List<WidgetItem>, updatedAt: Long?) {
+private fun WidgetBody(items: List<WidgetItem>, age: String?) {
     val ink = ColorProvider(Color(0xFF1B1033))
     val muted = ColorProvider(Color(0xFF6F6880))
     val lime = ColorProvider(Color(0xFF0F7A4A))
@@ -61,9 +66,7 @@ private fun WidgetBody(items: List<WidgetItem>, updatedAt: Long?) {
                 style = TextStyle(color = ink, fontSize = 13.sp, fontWeight = FontWeight.Bold),
                 modifier = GlanceModifier.defaultWeight(),
             )
-            val stamp = updatedAt?.let {
-                SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(it))
-            } ?: "tap to open"
+            val stamp = age ?: "tap to open"
             Text(text = stamp, style = TextStyle(color = muted, fontSize = 10.sp))
         }
 

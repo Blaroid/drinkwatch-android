@@ -114,6 +114,14 @@ data class WidgetItem(
     val suggested: Boolean = false,
 )
 
+/**
+ * A /v1/widget payload kept on disk: its rows and the moment the server built it.
+ *
+ * The timestamp travels with the rows because `age_hours` alone cannot reveal that
+ * the payload itself is days old — it is only accurate as of [generatedAt].
+ */
+data class WidgetCache(val items: List<WidgetItem>, val generatedAt: Long?)
+
 data class BasketRequestItem(val slug: String, val quantity: Int, val label: String? = null)
 
 data class BasketLine(

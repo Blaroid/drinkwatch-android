@@ -44,10 +44,13 @@ class HttpCacheTest {
         runCatching { server.shutdown() }
     }
 
-    private fun fetch(url: HttpUrl): String {
-        val response = transport.call(Request.Builder().url(url).build())
-        return response.use { it.body?.string() ?: "" }
-    }
+    private fun fetch(url: HttpUrl): String = call(url).first
+
+    /** The body plus the transport's offline-fallback flag, which callers key on. */
+    private fun call(url: HttpUrl): Pair<String, Boolean> =
+        transport.call(Request.Builder().url(url).build()).use { result ->
+            (result.response.body?.string() ?: "") to result.stale
+        }
 
     private fun payload(tag: String) = """{"generated_at":"$tag","items":[]}"""
 
@@ -108,11 +111,12 @@ class HttpCacheTest {
                 .setBody(payload("first")),
         )
         val url = server.url("/v1/widget")
-        assertEquals(payload("first"), fetch(url))
+        // An answer from the server is not a fallback.
+        assertEquals(payload("first") to false, call(url))
 
         // Tunnel outage: nothing answers, but the widget keeps its prices.
         server.shutdown()
-        assertEquals(payload("first"), fetch(url))
+        assertEquals(payload("first") to true, call(url))
         assertEquals(1, server.requestCount)
     }
 

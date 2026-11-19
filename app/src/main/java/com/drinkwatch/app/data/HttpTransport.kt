@@ -5,6 +5,7 @@ import okhttp3.CacheControl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import java.io.Closeable
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -27,6 +28,17 @@ internal const val HTTP_CACHE_BYTES = 8L * 1024 * 1024
  */
 internal class HttpTransport(cacheDir: File?) {
 
+    /**
+     * A response and where it came from.
+     *
+     * [stale] is true when the network call failed and the body is the last cached
+     * copy: the JSON is genuine, but no server has confirmed it since it was written,
+     * so a caller must not report the run as a refresh.
+     */
+    internal class HttpResult(val response: Response, val stale: Boolean) : Closeable {
+        override fun close() = response.close()
+    }
+
     private val cache: Cache? = cacheDir?.let { Cache(File(it, "http"), HTTP_CACHE_BYTES) }
 
     private val client: OkHttpClient = OkHttpClient.Builder()
@@ -39,10 +51,10 @@ internal class HttpTransport(cacheDir: File?) {
     val http: OkHttpClient get() = client
 
     /** Execute [request], falling back to the last cached copy if the network fails. */
-    fun call(request: Request): Response = try {
-        client.newCall(request).execute()
+    fun call(request: Request): HttpResult = try {
+        HttpResult(client.newCall(request).execute(), stale = false)
     } catch (offline: IOException) {
-        stale(request) ?: throw offline
+        stale(request)?.let { HttpResult(it, stale = true) } ?: throw offline
     }
 
     /**
