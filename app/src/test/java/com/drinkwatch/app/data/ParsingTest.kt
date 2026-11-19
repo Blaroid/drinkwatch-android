@@ -447,4 +447,85 @@ class ParsingTest {
         // Public endpoints send no token, so their 401 must not wipe the identity.
         assertEquals(DeviceRecovery.Fail, deviceRecovery(401, attempt = 0, auth = false))
     }
+
+    @Test
+    fun `basket inside the limits is untouched`() {
+        val items = listOf(
+            BasketRequestItem("monster-ultra-500ml", BASKET_MAX_QUANTITY, "Monster Ultra 500ml"),
+            BasketRequestItem("v-blue", 1),
+        )
+        val clamped = clampBasket(items)
+        assertEquals(items, clamped.items)
+        assertNull(clamped.note)
+    }
+
+    @Test
+    fun `basket drops lines past twelve and says how many`() {
+        val items = (1..14).map { BasketRequestItem("drink-$it", 1) }
+        val clamped = clampBasket(items)
+        // Keep the first twelve: the order is the order the user built.
+        assertEquals(items.take(BASKET_MAX_ITEMS), clamped.items)
+        assertEquals("Baskets hold 12 drinks — 2 extras were removed.", clamped.note)
+    }
+
+    @Test
+    fun `basket clamps quantities to the server range`() {
+        val clamped = clampBasket(listOf(BasketRequestItem("v-blue", 49), BasketRequestItem("monster-ultra", 0)))
+        assertEquals(listOf(48, 1), clamped.items.map { it.quantity })
+        assertEquals("Quantities top out at 48 — 2 lines were capped.", clamped.note)
+    }
+
+    @Test
+    fun `basket note reports both limits at once`() {
+        val items = (1..13).map { BasketRequestItem("drink-$it", if (it == 1) 99 else 1) }
+        assertEquals(
+            "Baskets hold 12 drinks — 1 extra was removed. Quantities top out at 48 — 1 line was capped.",
+            clampBasket(items).note,
+        )
+    }
+
+    @Test
+    fun `stored basket tolerates junk and is clamped on load`() {
+        assertEquals(
+            listOf(BasketRequestItem("v-blue", 2), BasketRequestItem("red-bull", 3)),
+            parseBasket("v-blue:2,junk,monster-ultra:x,red-bull:3"),
+        )
+        assertEquals(emptyList<BasketRequestItem>(), parseBasket(""))
+        // A persisted over-limit basket must not stay a sticky 422.
+        assertEquals(48, clampBasket(parseBasket("v-blue:99")).items.single().quantity)
+    }
+
+    @Test
+    fun `validation array detail becomes its messages, not the raw JSON`() {
+        // A real /v1/basket/compare 422: optString on this array showed ~1000 chars.
+        val body = """
+            {"detail":[{"type":"too_long","loc":["body","items"],"msg":"List should have at most 12 items after validation, not 13","input":[{"slug":"v-blue","quantity":1}],"ctx":{"field_type":"List","max_length":12}}]}
+        """.trimIndent()
+        val message = errorMessage(body, "Unprocessable Entity")
+        assertEquals("List should have at most 12 items after validation, not 13", message)
+        assertFalse(message.contains("loc"))
+    }
+
+    @Test
+    fun `repeated validation messages are said once`() {
+        val body = """
+            {"detail":[
+              {"type":"less_than_equal","loc":["body","items",0,"quantity"],"msg":"Input should be less than or equal to 48"},
+              {"type":"less_than_equal","loc":["body","items",1,"quantity"],"msg":"Input should be less than or equal to 48"}]}
+        """.trimIndent()
+        assertEquals("Input should be less than or equal to 48", errorMessage(body, "Unprocessable Entity"))
+    }
+
+    @Test
+    fun `string detail still wins and opaque bodies still fall back`() {
+        // The stale-slug recovery parses this one.
+        assertEquals(
+            "unknown product slug: v-blue",
+            errorMessage("""{"detail":"unknown product slug: v-blue"}""", "Not Found"),
+        )
+        assertEquals("""{"detail":null}""", errorMessage("""{"detail":null}""", "Not Found"))
+        // Not JSON at all (a proxy error page), then nothing at all.
+        assertEquals("oops", errorMessage("oops", "Internal Server Error"))
+        assertEquals("Service Unavailable", errorMessage("", "Service Unavailable"))
+    }
 }
