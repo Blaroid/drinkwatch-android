@@ -1,5 +1,6 @@
 package com.drinkwatch.app.data
 
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -94,6 +95,75 @@ class ParsingTest {
             staleNote(listOf("v-blue", "monster-ultra", "red-bull"), emptyMap()),
         )
         assertNull(staleNote(emptyList(), emptyMap()))
+    }
+
+    @Test
+    fun `a watchlist longer than the api cap is asked for in batches`() {
+        val slugs = (1..9).map { "drink-$it" }
+        // /v1/widget keeps only the first 8 `products` and answers 200 anyway, so the
+        // ninth drink needs a second request rather than being silently dropped.
+        assertEquals(listOf(slugs.take(8), slugs.drop(8)), widgetBatches(slugs))
+        assertTrue(widgetBatches((1..20).map { "drink-$it" }).all { it.size <= WIDGET_BATCH })
+    }
+
+    @Test
+    fun `short and empty watchlists still make one request`() {
+        assertEquals(listOf(emptyList<String>()), widgetBatches(emptyList()))
+        assertEquals(listOf(listOf("v-blue")), widgetBatches(listOf("v-blue")))
+        // Exactly at the cap is one request, not one request plus an empty one.
+        assertEquals(1, widgetBatches((1..8).map { "drink-$it" }).size)
+    }
+
+    @Test
+    fun `a repeated slug costs no slot and no second row`() {
+        val slugs = (1..8).map { "drink-$it" } + "drink-1"
+        assertEquals(listOf((1..8).map { "drink-$it" }), widgetBatches(slugs))
+    }
+
+    // Two batched /v1/widget answers, the second carrying a suggestion that repeats a
+    // drink the first batch already returned.
+    private fun widgetPayload(generatedAt: String, vararg rows: JSONObject) = JSONObject()
+        .put("generated_at", generatedAt)
+        .put("radius_km", 15.0)
+        .put("items", JSONArray(rows.toList()))
+
+    private fun widgetRow(slug: String, suggested: Boolean = false) = JSONObject()
+        .put("slug", slug)
+        .put("label", "$slug label")
+        .put("price_cents", 329)
+        .put("store", "SpudShed")
+        .put("chain", "spudshed")
+        .put("promo", "none")
+        .put("source", "scrape")
+        .put("age_hours", 1.5)
+        .put("suggested", suggested)
+
+    @Test
+    fun `batched payloads merge in watchlist order and drop repeated rows`() {
+        val merged = mergedWidgetPayload(
+            listOf(
+                widgetPayload("2026-11-19T03:00:00Z", widgetRow("v-blue"), widgetRow("red-bull")),
+                widgetPayload(
+                    "2026-11-19T05:00:00Z",
+                    widgetRow("monster-ultra"),
+                    widgetRow("v-blue", suggested = true),
+                ),
+            ),
+        )
+        val cache = Api.cachedWidget(merged.toString())
+        // The watchlist order wins over the server's suggestion ranking, and the
+        // repeated slug keeps its tracked row (first copy) instead of appearing twice.
+        assertEquals(listOf("v-blue", "red-bull", "monster-ultra"), cache.items.map { it.slug })
+        assertFalse(cache.items.first { it.slug == "v-blue" }.suggested)
+        // The widget's age note is measured from generated_at, so it must be the
+        // oldest batch: the newer one would claim the whole list is fresher than it is.
+        assertEquals(parseInstant("2026-11-19T03:00:00Z"), cache.generatedAt)
+    }
+
+    @Test
+    fun `a single answer is left exactly as the server sent it`() {
+        val single = widgetPayload("2026-11-19T03:54:09.332071Z", widgetRow("v-blue"))
+        assertEquals("2026-11-19T03:54:09.332071Z", mergedWidgetPayload(listOf(single)).getString("generated_at"))
     }
 
     @Test

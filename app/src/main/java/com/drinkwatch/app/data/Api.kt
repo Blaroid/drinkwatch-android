@@ -216,7 +216,12 @@ class Api(
     )
 
     /**
-     * Widget rows, surviving tracked drinks that were renamed or merged server-side.
+     * Widget rows for the whole watchlist, surviving drinks renamed or merged server-side.
+     *
+     * /v1/widget keeps only the first eight `products` slugs and answers 200 anyway, so
+     * a longer watchlist silently lost the drinks followed most recently. Asking in
+     * batches of [WIDGET_BATCH] lifts the limit instead of advertising it: no watchlist
+     * size is refused, so nothing has to warn the user to stop following drinks.
      *
      * /v1/widget 404s when any requested slug is gone and names only the first
      * offender, so a list with two dead drinks needs two passes. Only that slug is
@@ -236,30 +241,42 @@ class Api(
         suggest: Int = 0,
         cache: Boolean = false,
     ): List<WidgetItem> {
-        val fetch = recoveringWidget(lat, lon, radiusKm, slugs, suggest)
-        val payload = fetch.payload
+        val batches = widgetBatches(slugs)
+        // Suggestions go on the last batch so the server appends them after every
+        // tracked row; asked for on the first one they would land in the middle of the
+        // list, above the drinks still waiting to be fetched.
+        val fetches = batches.mapIndexed { index, batch ->
+            recoveringWidget(
+                lat, lon, radiusKm, batch,
+                suggest = if (index == batches.lastIndex) suggest else 0,
+            )
+        }
+        val dropped = fetches.flatMap { it.dropped }
 
-        if (fetch.dropped.isNotEmpty()) {
+        if (dropped.isNotEmpty()) {
             // The response that dropped a slug no longer mentions it, so its name
             // can only come from the previous payload.
             val labels = itemsFromCache(prefs.widgetCache).associate { it.slug to it.label }
             // Remove only what went stale: the user may have edited the list while
-            // the request was in flight.
-            prefs.trackedSlugs = prefs.trackedSlugs.filterNot { it in fetch.dropped }
-            staleNote(fetch.dropped, labels)?.let { prefs.trackedNote = it }
+            // the request was in flight, so the filter is applied to whatever the list
+            // is now rather than to the copy this call started with.
+            prefs.updateTracked { current -> current.filterNot { it in dropped } }
+            staleNote(dropped, labels)?.let { prefs.trackedNote = it }
         }
+
+        val payload = mergedWidgetPayload(fetches.map { it.payload })
         if (cache) {
             // The widget shows this copy, so keep it in step with what we just
             // parsed; only an answer from the server may call it fresh. A stale
             // copy served during an outage must not reset the timestamp, or the
             // widget would present month-old prices as a refresh from minutes ago
-            // and the worker's 6-hour recovery test could never fire.
+            // and the worker's 6-hour recovery test could never fire. Every batch has
+            // to be live for that reason: one replayed from the cache would leave rows
+            // in the merged payload that the timestamp claims were fetched just now.
             prefs.widgetCache = payload.toString()
-            if (fetch.live) prefs.widgetCacheAt = System.currentTimeMillis()
+            if (fetches.all { it.live }) prefs.widgetCacheAt = System.currentTimeMillis()
         }
-
-        val items = payload.optJSONArray("items") ?: JSONArray()
-        return (0 until items.length()).map { items.getJSONObject(it).toWidgetItem() }
+        return payload.toWidgetItems()
     }
 
     /** The widget payload, the slugs a 404 recovery had to drop, and whether a server answered. */
@@ -680,6 +697,65 @@ internal fun staleNote(dropped: List<String>, labels: Map<String, String>): Stri
     return "$listed$verb no longer listed — removed from your drinks"
 }
 
+// ------------------------------------------------------- widget batching
+
+/**
+ * Slugs per /v1/widget request.
+ *
+ * The endpoint parses `products` as a comma-separated list and keeps `slugs[:8]`
+ * (public.py), answering 200 with no hint that anything was cut, so the only fix is
+ * to ask in batches the server cannot truncate.
+ */
+internal const val WIDGET_BATCH = 8
+
+/**
+ * Split [slugs] into requests /v1/widget will answer in full.
+ *
+ * The list is de-duplicated first: a repeated slug would waste one of the eight
+ * slots, and the server answers one row per requested product, so it would also
+ * show the drink twice. An empty watchlist still needs one request — that is how the
+ * "most widely stocked" default list is fetched.
+ */
+internal fun widgetBatches(slugs: List<String>): List<List<String>> {
+    val wanted = slugs.distinct()
+    if (wanted.isEmpty()) return listOf(emptyList())
+    return wanted.chunked(WIDGET_BATCH)
+}
+
+/**
+ * Fold the batched answers into one payload for the widget's offline copy.
+ *
+ * Rows keep the batch order, which is the watchlist order, and a row whose slug has
+ * already appeared is dropped: the only way to repeat one is a suggestion drawn from
+ * the whole catalogue, which can name a drink tracked in an earlier batch. Keeping
+ * the first copy means the tracked row survives (unmarked as a suggestion), and it
+ * keeps the slug unique — HomeScreen keys its list by it, and LazyColumn throws on a
+ * duplicate key.
+ *
+ * `generated_at` becomes the *oldest* batch: the widget's age note is measured from
+ * it, so the newest batch's timestamp would understate how old its stalest row is.
+ */
+internal fun mergedWidgetPayload(bodies: List<JSONObject>): JSONObject {
+    // One answer is already the payload; merging it would only round-trip its
+    // generated_at through Instant.toString().
+    if (bodies.size <= 1) return bodies.firstOrNull() ?: JSONObject()
+
+    val items = JSONArray()
+    val seen = mutableSetOf<String>()
+    bodies.forEach { body ->
+        val rows = body.optJSONArray("items") ?: JSONArray()
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            if (seen.add(row.optString("slug"))) items.put(row)
+        }
+    }
+    val oldest = bodies.mapNotNull { parseInstant(it.str("generated_at")) }.minOrNull()
+    return JSONObject()
+        .put("generated_at", oldest?.let { Instant.ofEpochMilli(it).toString() } ?: JSONObject.NULL)
+        .put("radius_km", bodies.first().optDouble("radius_km", 0.0))
+        .put("items", items)
+}
+
 // -------------------------------------------------------------------- parsing
 
 internal fun JSONObject.str(key: String): String? =
@@ -758,6 +834,12 @@ internal fun JSONObject.toWidgetItem(): WidgetItem = WidgetItem(
     ageHours = optDouble("age_hours", 0.0),
     suggested = optBoolean("suggested", false),
 )
+
+/** Every row of a /v1/widget payload, in the order the server ranked them. */
+internal fun JSONObject.toWidgetItems(): List<WidgetItem> {
+    val items = optJSONArray("items") ?: JSONArray()
+    return (0 until items.length()).map { items.getJSONObject(it).toWidgetItem() }
+}
 
 /** An ISO-8601 timestamp from the API as epoch millis, or null when unreadable. */
 internal fun parseInstant(value: String?): Long? {
