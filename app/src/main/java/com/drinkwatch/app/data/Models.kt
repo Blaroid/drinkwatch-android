@@ -76,6 +76,7 @@ data class Product(
 data class DealStats(val median90dCents: Int?, val min90dCents: Int?, val deal: String)
 
 data class Offer(
+    val observationId: Int?,
     val storeId: Int,
     val storeName: String,
     val chainCode: String,

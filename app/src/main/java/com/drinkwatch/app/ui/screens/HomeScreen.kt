@@ -56,7 +56,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.drinkwatch.app.data.Alerts
+import com.drinkwatch.app.data.Deal
 import com.drinkwatch.app.data.Geo
+import com.drinkwatch.app.data.History
 import com.drinkwatch.app.data.PlaceName
 import com.drinkwatch.app.data.Api
 import com.drinkwatch.app.data.Offer
@@ -68,6 +70,7 @@ import com.drinkwatch.app.data.WidgetItem
 import com.drinkwatch.app.ui.components.Chip
 import com.drinkwatch.app.ui.components.ChipTone
 import com.drinkwatch.app.ui.components.DealChip
+import com.drinkwatch.app.ui.components.Sparkline
 import com.drinkwatch.app.ui.components.ErrorBar
 import com.drinkwatch.app.ui.components.LoadingRow
 import com.drinkwatch.app.ui.components.NoteBar
@@ -90,6 +93,10 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
     var detailSlug by remember { mutableStateOf<String?>(null) }
     var locationTitle by remember { mutableStateOf(prefs.locationTitle()) }
     var locating by remember { mutableStateOf(false) }
+    // "My drinks" or the best-value board; both are one tap from the top.
+    var board by remember { mutableStateOf("drinks") }
+    var deals by remember { mutableStateOf<List<Deal>>(emptyList()) }
+    var dealMetric by remember { mutableStateOf("per_litre") }
 
     fun load() {
         scope.launch {
@@ -179,6 +186,24 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
         },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
+            Row(
+                Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                androidx.compose.material3.FilterChip(
+                    selected = board == "drinks",
+                    onClick = { board = "drinks" },
+                    label = { Text("My drinks") },
+                )
+                androidx.compose.material3.FilterChip(
+                    selected = board == "deals",
+                    onClick = {
+                        board = "deals"
+                        load()
+                    },
+                    label = { Text("Best value") },
+                )
+            }
             error?.let { Box(Modifier.padding(horizontal = 16.dp)) { ErrorBar(it, onRetry = { load() }) } }
             note?.let {
                 Box(Modifier.padding(horizontal = 16.dp)) {
@@ -197,10 +222,76 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                 )
             }
+            if (board == "deals") {
+                Row(
+                    Modifier.padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    listOf("per_litre" to "$/L", "per_can" to "$/can", "price" to "price").forEach { (key, label) ->
+                        androidx.compose.material3.FilterChip(
+                            selected = dealMetric == key,
+                            onClick = {
+                                dealMetric = key
+                                scope.launch {
+                                    deals = runCatching {
+                                        api.deals(prefs.lat, prefs.lon, prefs.radiusKm, key)
+                                    }.getOrDefault(emptyList())
+                                }
+                            },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+            }
             LazyColumn(
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                if (board == "deals") {
+                    items(deals, key = { it.slug }) { deal ->
+                        Card(
+                            shape = RoundedCornerShape(18.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                            ),
+                            modifier = Modifier.fillMaxWidth().clickable { detailSlug = deal.slug },
+                        ) {
+                            Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(deal.label, style = MaterialTheme.typography.bodyMedium)
+                                    Text(
+                                        deal.storeName + (deal.distanceKm?.let { " · " + Price.km(it) } ?: ""),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    Text(
+                                        Price.age(deal.ageHours),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text(
+                                        deal.perLitreCents?.let { (it / 100.0).let { v -> String.format(java.util.Locale.US, "$%.2f/L", v) } } ?: "",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                    Text(Price.aud(deal.priceCents), style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
+                    }
+                    if (deals.isEmpty() && !loading) {
+                        item {
+                            Text(
+                                "No prices nearby yet — the board fills up as prices are seen.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    item { Spacer(Modifier.height(80.dp)) }
+                } else {
                 val firstSuggestion = items.indexOfFirst { it.suggested }
                 itemsIndexed(items, key = { _, item -> item.slug }) { index, item ->
                     if (index == firstSuggestion && firstSuggestion > 0) {
@@ -230,6 +321,7 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
                     }
                 }
                 item { Spacer(Modifier.height(80.dp)) }
+                }
             }
         }
     }
@@ -332,14 +424,21 @@ private fun DrinkDetailSheet(
     var error by remember { mutableStateOf<String?>(null) }
     var alertOpen by remember { mutableStateOf(false) }
     var alertMessage by remember { mutableStateOf<String?>(null) }
+    var sortKey by remember { mutableStateOf("price") }
+    var history by remember { mutableStateOf<History?>(null) }
+    var confirming by remember { mutableStateOf<Int?>(null) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    LaunchedEffect(slug) {
+    LaunchedEffect(slug, sortKey) {
         loading = true
-        runCatching { api.prices(slug, prefs.lat, prefs.lon, prefs.radiusKm) }
+        runCatching { api.prices(slug, prefs.lat, prefs.lon, prefs.radiusKm, sortKey) }
             .onSuccess { data = it }
             .onFailure { error = it.message }
         loading = false
+    }
+
+    LaunchedEffect(slug) {
+        history = runCatching { api.history(slug, prefs.lat, prefs.lon, prefs.radiusKm) }.getOrNull()
     }
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
@@ -358,6 +457,29 @@ private fun DrinkDetailSheet(
             if (loading) LoadingRow()
             ErrorBar(error)
             alertMessage?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) }
+
+            history?.let { past ->
+                if (past.points.size >= 2) {
+                    Spacer(Modifier.height(8.dp))
+                    Sparkline(past.points, past.medianCents)
+                    Text(
+                        "Last " + past.days + " days · median " + Price.aud(past.medianCents) +
+                            " · low " + Price.aud(past.minCents),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("price" to "price", "per_can" to "$/can", "per_litre" to "$/L").forEach { (key, label) ->
+                    androidx.compose.material3.FilterChip(
+                        selected = sortKey == key,
+                        onClick = { sortKey = key },
+                        label = { Text(label) },
+                    )
+                }
+            }
 
             val offers = data?.offers.orEmpty()
             if (offers.isNotEmpty()) {
@@ -400,10 +522,50 @@ private fun DrinkDetailSheet(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
+                                if (offer.priceScope == "store" && offer.observationId != null) {
+                                    TextButton(
+                                        enabled = confirming != offer.observationId,
+                                        onClick = {
+                                            val id = offer.observationId
+                                            confirming = id
+                                            scope.launch {
+                                                runCatching {
+                                                    api.confirmObservation(id, prefs.lat, prefs.lon)
+                                                }.onSuccess {
+                                                    alertMessage = "Thanks — price confirmed"
+                                                }.onFailure {
+                                                    alertMessage = it.message
+                                                }
+                                                confirming = null
+                                            }
+                                        },
+                                    ) {
+                                        Text(
+                                            if (confirming == offer.observationId) "…" else "Still this price?",
+                                            style = MaterialTheme.typography.labelSmall,
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
                 }
+                val cheapest = offers.firstOrNull()
+                val nearest = offers.minByOrNull { it.distanceKm ?: 999.0 }
+                if (cheapest != null && nearest != null && cheapest.storeId != nearest.storeId) {
+                    val fuel = ((cheapest.distanceKm ?: 0.0) * 2 * 0.085 * 204).toInt()
+                    val saving = nearest.priceCents - cheapest.priceCents - fuel
+                    Text(
+                        (if (saving > 0) "Worth the drive: " else "Not worth the drive: ") +
+                            "cheapest is " + Price.km(cheapest.distanceKm) + " away (≈" + Price.aud(fuel) +
+                            " fuel), " + (if (saving > 0) "saving " else "costing ") + Price.aud(kotlin.math.abs(saving)) +
+                            " vs " + nearest.storeName,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (saving > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                }
+
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     TextButton(onClick = { alertOpen = true }) {
                         Icon(Icons.Filled.NotificationsActive, null, modifier = Modifier.size(18.dp))

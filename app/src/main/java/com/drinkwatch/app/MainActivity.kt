@@ -35,6 +35,17 @@ class MainActivity : ComponentActivity() {
             val updates = ServiceLocator.updates(context)
             LaunchedEffect(Unit) {
                 runCatching { updates.check(silent = true) }
+                // Keep the offline catalogue warm and tell the server what this
+                // phone follows, so the Sunday digest knows what to summarise.
+                val prefs = ServiceLocator.prefs(context)
+                val api = ServiceLocator.api(context)
+                val catalogue = com.drinkwatch.app.data.OfflineCatalogue(context)
+                if (catalogue.isStale()) runCatching { catalogue.refresh(api) }
+                runCatching {
+                    prefs.token?.let {
+                        api.syncWatchlist(prefs.trackedSlugs, prefs.lat, prefs.lon, prefs.radiusKm)
+                    }
+                }
             }
             DrinkWatchTheme {
                 AppRoot()

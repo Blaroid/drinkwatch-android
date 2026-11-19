@@ -58,7 +58,12 @@ import com.drinkwatch.app.ui.components.StorePickerDialog
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import kotlinx.coroutines.launch
 
-private enum class AddMode(val label: String) { Barcode("Barcode"), Tag("Price tag"), Manual("Type it in") }
+private enum class AddMode(val label: String) {
+    Barcode("Barcode"),
+    Tag("Price tag"),
+    Receipt("Receipt"),
+    Manual("Type it in"),
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -89,6 +94,10 @@ fun AddScreen() {
     // What the last scan resolved to, so scanning a second can of the same drink
     // lands the user straight in the price form instead of appearing to do nothing.
     var knownBarcode by remember { mutableStateOf<String?>(null) }
+    var receiptCandidates by remember { mutableStateOf<List<com.drinkwatch.app.data.ReceiptCandidate>>(emptyList()) }
+    var receiptSelected by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    var receiptStore by remember { mutableStateOf<Store?>(null) }
+    var receiptBusy by remember { mutableStateOf(false) }
     var suggestionName by remember { mutableStateOf<String?>(null) }
     var suggestionBrand by remember { mutableStateOf<String?>(null) }
 
@@ -125,7 +134,17 @@ fun AddScreen() {
                         pendingDialog = true
                     }
                 }
-                .onFailure { error = it.message }
+                .onFailure { failure ->
+                    // No signal in the servo car park: the cached catalogue still
+                    // knows the can, so say so instead of failing blankly.
+                    val cached = com.drinkwatch.app.data.OfflineCatalogue(context)
+                        .offlineLabel(code)
+                    error = if (cached != null) {
+                        "Offline: that is $cached. Reconnect to add the price."
+                    } else {
+                        failure.message
+                    }
+                }
             busy = false
         }
     }
@@ -316,6 +335,129 @@ fun AddScreen() {
                     }
                 }
 
+                AddMode.Receipt -> SectionCard(title = "Receipt") {
+                    Text(
+                        "Photograph a docket and add every can on it at once. Match the lines, pick the store, submit.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    PrimaryButton("Take photo") { shoot() }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = { pickImage.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                    ) { Text("Choose from gallery") }
+
+                    ocrText?.let { text ->
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Read " + text.lines().count { it.isNotBlank() } + " lines",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedButton(onClick = { receiptStore = null; storePicker = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text(receiptStore?.name ?: "Which store is this from?")
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        PrimaryButton(
+                            if (receiptBusy) "Matching…" else "Match lines",
+                            enabled = !receiptBusy && receiptStore != null,
+                        ) {
+                            scope.launch {
+                                receiptBusy = true
+                                error = null
+                                runCatching {
+                                    api.ensureDevice()
+                                    api.parseReceipt(text)
+                                }.onSuccess { candidates ->
+                                    receiptCandidates = candidates.filter { it.priceCents != null }
+                                    receiptSelected = receiptCandidates
+                                        .mapIndexedNotNull { index, candidate ->
+                                            if (candidate.productSlug != null) index else null
+                                        }
+                                        .toSet()
+                                }.onFailure { error = it.message }
+                                receiptBusy = false
+                            }
+                        }
+                    }
+
+                    if (receiptCandidates.isNotEmpty()) {
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            receiptSelected.size.toString() + " of " + receiptCandidates.size + " matched",
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                        receiptCandidates.forEachIndexed { index, candidate ->
+                            val checked = index in receiptSelected
+                            val matched = candidate.productSlug != null
+                            Row(
+                                Modifier.fillMaxWidth().clickable(enabled = matched) {
+                                    receiptSelected = if (checked) receiptSelected - index else receiptSelected + index
+                                }.padding(vertical = 4.dp),
+                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                            ) {
+                                androidx.compose.material3.Checkbox(
+                                    checked = checked,
+                                    enabled = matched,
+                                    onCheckedChange = { on ->
+                                        receiptSelected = if (on == true) receiptSelected + index else receiptSelected - index
+                                    },
+                                )
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        candidate.label ?: candidate.line.take(40),
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    Text(
+                                        candidate.line.take(48),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Text(Price.aud(candidate.priceCents), style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        PrimaryButton(
+                            if (receiptBusy) "Saving…" else "Add " + receiptSelected.size + " prices",
+                            enabled = !receiptBusy && receiptSelected.isNotEmpty() && receiptStore != null,
+                        ) {
+                            val storeId = receiptStore?.id ?: return@PrimaryButton
+                            val items = receiptCandidates.mapIndexedNotNull { index, candidate ->
+                                if (index !in receiptSelected) return@mapIndexedNotNull null
+                                val slug = candidate.productSlug ?: return@mapIndexedNotNull null
+                                val cents = candidate.priceCents ?: return@mapIndexedNotNull null
+                                Triple(storeId, slug, cents)
+                            }
+                            scope.launch {
+                                receiptBusy = true
+                                runCatching { api.submitBatch(items) }
+                                    .onSuccess { response ->
+                                        val saved = (0 until response.optJSONArray("results").let { it?.length() ?: 0 })
+                                            .count { index ->
+                                                response.optJSONArray("results")
+                                                    ?.optJSONObject(index)?.optString("status") == "accepted"
+                                            }
+                                        status = "Added " + receiptSelected.size + " prices from the receipt"
+                                        receiptCandidates = emptyList()
+                                        receiptSelected = emptySet()
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            "Added " + receiptSelected.size + " prices",
+                                            android.widget.Toast.LENGTH_SHORT,
+                                        ).show()
+                                    }
+                                    .onFailure { error = it.message }
+                                receiptBusy = false
+                            }
+                        }
+                    }
+                }
+
                 AddMode.Manual -> Spacer(Modifier.height(0.dp))
             }
 
@@ -407,6 +549,7 @@ fun AddScreen() {
             onDismiss = { storePicker = false },
             onPick = {
                 store = it
+                if (mode == AddMode.Receipt) receiptStore = it
                 storePicker = false
             },
         )

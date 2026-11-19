@@ -72,6 +72,8 @@ fun SettingsScreen(onBack: () -> Unit) {
     var message by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var picker by remember { mutableStateOf(false) }
+    var apiVersion by remember { mutableStateOf<String?>(null) }
+    var apiFacts by remember { mutableStateOf<String?>(null) }
 
     val locationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (!granted) {
@@ -100,6 +102,14 @@ fun SettingsScreen(onBack: () -> Unit) {
     }
 
     LaunchedEffect(Unit) {
+        runCatching { ServiceLocator.api(context).meta() }.onSuccess { meta ->
+            apiVersion = meta.optString("version")
+            val stores = meta.optInt("store_count")
+            val products = meta.optInt("product_count")
+            val observations = meta.optInt("observation_count")
+            val freshest = meta.optString("freshest_observation_at").take(16).replace("T", " ")
+            apiFacts = "$stores stores · $products drinks · $observations prices\nnewest price: $freshest"
+        }
         if (tracked.isNotEmpty()) {
             runCatching { ServiceLocator.api(context).searchProducts("energy", 200) }
                 .onSuccess { products: List<Product> ->
@@ -337,7 +347,18 @@ fun SettingsScreen(onBack: () -> Unit) {
             }
 
             SectionCard(title = "About") {
-                Text("Version " + BuildConfig.VERSION_NAME, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "App " + BuildConfig.VERSION_NAME + " (build " + BuildConfig.VERSION_CODE + ")" +
+                        (apiVersion?.let { " · API " + it } ?: ""),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                apiFacts?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Text(
                     "Store locations from OpenStreetMap. Fuel prices from FuelWatch WA. " +
                         "Supermarket prices are collected from public product pages and user reports.",

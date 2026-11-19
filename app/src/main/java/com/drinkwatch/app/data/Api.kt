@@ -300,10 +300,22 @@ class Api(
         }
     }
 
-    suspend fun prices(slug: String, lat: Double, lon: Double, radiusKm: Int): ProductPrices {
+    suspend fun prices(
+        slug: String,
+        lat: Double,
+        lon: Double,
+        radiusKm: Int,
+        sort: String = "price",
+    ): ProductPrices {
         val payload = getJson(
             "/v1/prices",
-            mapOf("product" to slug, "lat" to lat.toString(), "lon" to lon.toString(), "radius_km" to radiusKm.toString()),
+            mapOf(
+                "product" to slug,
+                "lat" to lat.toString(),
+                "lon" to lon.toString(),
+                "radius_km" to radiusKm.toString(),
+                "sort" to sort,
+            ),
         )
         val offers = payload.optJSONArray("offers") ?: JSONArray()
         return ProductPrices(
@@ -516,6 +528,131 @@ class Api(
     suspend fun health(): JSONObject = getJson("/healthz")
 
     /** Latest published build, from /app/version.json (no auth, outside /v1). */
+    suspend fun history(slug: String, lat: Double, lon: Double, radiusKm: Int, days: Int = 90): History {
+        val payload = getJson(
+            "/v1/history",
+            mapOf(
+                "product" to slug,
+                "lat" to lat.toString(),
+                "lon" to lon.toString(),
+                "radius_km" to radiusKm.toString(),
+                "days" to days.toString(),
+            ),
+        )
+        val points = payload.optJSONArray("points") ?: JSONArray()
+        return History(
+            days = payload.optInt("days", days),
+            points = (0 until points.length()).map { index ->
+                val row = points.getJSONObject(index)
+                HistoryPoint(
+                    day = row.optString("day"),
+                    priceCents = row.optInt("price_cents"),
+                    storeName = row.str("store_name"),
+                )
+            },
+            medianCents = if (payload.isNull("median_cents")) null else payload.optInt("median_cents"),
+            minCents = if (payload.isNull("min_cents")) null else payload.optInt("min_cents"),
+            maxCents = if (payload.isNull("max_cents")) null else payload.optInt("max_cents"),
+        )
+    }
+
+    suspend fun deals(
+        lat: Double,
+        lon: Double,
+        radiusKm: Int,
+        metric: String = "per_litre",
+        limit: Int = 20,
+    ): List<Deal> {
+        val array = getArray(
+            "/v1/deals",
+            mapOf(
+                "lat" to lat.toString(),
+                "lon" to lon.toString(),
+                "radius_km" to radiusKm.toString(),
+                "metric" to metric,
+                "limit" to limit.toString(),
+            ),
+        )
+        return (0 until array.length()).map { index ->
+            val row = array.getJSONObject(index)
+            val product = row.getJSONObject("product")
+            Deal(
+                slug = product.optString("slug"),
+                label = listOf(product.optString("brand"), product.optString("name"))
+                    .filter { it.isNotBlank() }.joinToString(" ") +
+                    (if (product.isNull("size_ml")) "" else " ${product.optInt("size_ml")}ml"),
+                storeName = row.optString("store_name"),
+                chainCode = row.optString("chain_code"),
+                distanceKm = if (row.isNull("distance_km")) null else row.optDouble("distance_km"),
+                priceCents = row.optInt("price_cents"),
+                perCanCents = if (row.isNull("per_can_cents")) null else row.optInt("per_can_cents"),
+                perLitreCents = if (row.isNull("per_litre_cents")) null else row.optInt("per_litre_cents"),
+                promoKind = row.optString("promo_kind", "none"),
+                ageHours = row.optDouble("age_hours", 0.0),
+            )
+        }
+    }
+
+    suspend fun catalogue(): JSONObject = getJson("/v1/catalogue")
+
+    suspend fun meta(): JSONObject = getJson("/v1/meta")
+
+    /** Server-side matching of OCR receipt lines to catalogue products. */
+    suspend fun parseReceipt(text: String): List<ReceiptCandidate> {
+        val payload = JSONObject().put("text", text)
+        val array = JSONArray(execute(
+            authHeader(
+                Request.Builder()
+                    .url(URL("/v1/receipts/parse", emptyMap()))
+                    .post(payload.toString().toRequestBody(jsonType)),
+                true,
+            ).build()
+        ))
+        return (0 until array.length()).map { index ->
+            val row = array.getJSONObject(index)
+            ReceiptCandidate(
+                line = row.optString("line"),
+                priceCents = if (row.isNull("price_cents")) null else row.optInt("price_cents"),
+                productSlug = row.str("product_slug"),
+                label = row.str("label"),
+                score = row.optDouble("score", 0.0),
+            )
+        }
+    }
+
+    /** One request for a whole docket; the server charges the quota once. */
+    suspend fun submitBatch(items: List<Triple<Int, String, Int>>): JSONObject {
+        val entries = JSONArray()
+        items.forEach { (storeId, slug, priceCents) ->
+            entries.put(
+                JSONObject()
+                    .put("store_id", storeId)
+                    .put("product_slug", slug)
+                    .put("price_cents", priceCents)
+            )
+        }
+        return postJson("/v1/observations/batch", JSONObject().put("items", entries))
+    }
+
+    /** "This price is still right" from the shop floor. */
+    suspend fun confirmObservation(id: Int, lat: Double?, lon: Double?): JSONObject {
+        val payload = JSONObject()
+        if (lat != null) payload.put("lat", lat)
+        if (lon != null) payload.put("lon", lon)
+        return postJson("/v1/observations/" + id + "/confirm", payload)
+    }
+
+    suspend fun syncWatchlist(slugs: List<String>, lat: Double, lon: Double, radiusKm: Int) {
+        postJson(
+            "/v1/watchlist",
+            JSONObject()
+                .put("slugs", JSONArray(slugs))
+                .put("lat", lat)
+                .put("lon", lon)
+                .put("radius_km", radiusKm),
+        )
+    }
+
     suspend fun latestAppVersion(): AppUpdate = withContext(Dispatchers.IO) {
         val request = Request.Builder()
             .url(prefs.baseUrl + "/app/version.json")
@@ -716,6 +853,7 @@ internal fun JSONObject.toProduct(): Product = Product(
 internal fun JSONObject.toOffer(): Offer {
     val stats = optJSONObject("stats")
     return Offer(
+        observationId = if (isNull("observation_id")) null else optInt("observation_id"),
         storeId = getInt("store_id"),
         storeName = optString("store_name"),
         chainCode = optString("chain_code"),

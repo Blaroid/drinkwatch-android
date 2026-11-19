@@ -19,8 +19,8 @@ android {
         applicationId = "com.drinkwatch.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 15
-        versionName = "0.7.0"
+        versionCode = 16
+        versionName = "0.7.1"
     }
 
     signingConfigs {
@@ -115,6 +115,12 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
 
     testImplementation("junit:junit:4.13.2")
+
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
     testImplementation(libs.mockwebserver)
     testImplementation(libs.org.json)
 }
