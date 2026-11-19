@@ -131,8 +131,14 @@ data class BasketStore(
     val storeName: String,
     val chainCode: String,
     val suburb: String?,
+    /** Straight-line distance from the origin, what the store list shows. */
     val distanceKm: Double,
+    /** Round-trip road distance, the distance the fuel figure below was priced on. */
+    val driveDistanceKm: Double?,
+    /** Items only, see [cost] for the basis the server ranks on. */
     val totalCents: Int,
+    val fuelCostCents: Int?,
+    val totalWithFuelCents: Int?,
     val complete: Boolean,
     val items: List<BasketLine>,
 )
@@ -140,6 +146,8 @@ data class BasketStore(
 data class BasketResult(
     val radiusKm: Double,
     val stores: List<BasketStore>,
+    val multiStoreItemsCents: Int?,
+    val multiStoreFuelCostCents: Int?,
     val multiStoreTotalCents: Int?,
     val multiStorePlan: List<BasketPlanLine>,
     val savingsVsWorstCents: Int?,

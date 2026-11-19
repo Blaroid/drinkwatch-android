@@ -549,7 +549,10 @@ internal fun JSONObject.toBasketResult(): BasketResult {
                 chainCode = store.optString("chain_code"),
                 suburb = store.str("suburb"),
                 distanceKm = store.optDouble("distance_km", 0.0),
+                driveDistanceKm = if (store.isNull("drive_distance_km")) null else store.optDouble("drive_distance_km"),
                 totalCents = store.getInt("total_cents"),
+                fuelCostCents = if (store.isNull("fuel_cost_cents")) null else store.optInt("fuel_cost_cents"),
+                totalWithFuelCents = if (store.isNull("total_with_fuel_cents")) null else store.optInt("total_with_fuel_cents"),
                 complete = store.optBoolean("complete", false),
                 items = (0 until items.length()).map { itemIndex ->
                     val line = items.getJSONObject(itemIndex)
@@ -566,6 +569,8 @@ internal fun JSONObject.toBasketResult(): BasketResult {
                 },
             )
         },
+        multiStoreItemsCents = if (isNull("multi_store_items_cents")) null else optInt("multi_store_items_cents"),
+        multiStoreFuelCostCents = if (isNull("multi_store_fuel_cost_cents")) null else optInt("multi_store_fuel_cost_cents"),
         multiStoreTotalCents = if (isNull("multi_store_total_cents")) null else optInt("multi_store_total_cents"),
         multiStorePlan = (0 until plan.length()).map { index ->
             val line = plan.getJSONObject(index)
