@@ -84,10 +84,11 @@ fun YouScreen(onOpenSettings: () -> Unit = {}) {
                 caffeine = today
                 alerts = alertList
                 notifications = notes
-                // Reading the list in-app is not the same as being notified: leave
-                // lastSeenNotificationId to the background worker so it can still
-                // surface anything new as a phone notification.
-                notes.filter { it.readAt == null }.take(5).forEach { note ->
+                // Only mark read what the worker has already pushed (id <= cursor):
+                // marking a newer alert read would label it handled while it still
+                // needs its phone notification. The list itself is unaffected.
+                val surfaced = prefs.lastSeenNotificationId
+                notes.filter { it.readAt == null && it.id <= surfaced }.take(5).forEach { note ->
                     runCatching { api.markNotificationRead(note.id) }
                 }
             }.onFailure { error = it.message }

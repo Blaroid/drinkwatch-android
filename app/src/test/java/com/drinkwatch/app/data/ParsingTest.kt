@@ -2,6 +2,7 @@ package com.drinkwatch.app.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ParsingTest {
@@ -91,5 +92,55 @@ class ParsingTest {
             staleNote(listOf("v-blue", "monster-ultra", "red-bull"), emptyMap()),
         )
         assertNull(staleNote(emptyList(), emptyMap()))
+    }
+
+    private fun note(id: Int) = AppNotification(
+        id = id,
+        kind = "price_alert",
+        title = "alert $id",
+        body = "body $id",
+        readAt = null,
+        createdAt = "2026-01-01T00:00:00Z",
+    )
+
+    @Test
+    fun `pending alerts post the oldest unread first, not the newest`() {
+        // The API answers newest-first: id order and response order disagree.
+        val all = listOf(9, 8, 7, 6, 5).map { note(it) }
+        assertEquals(listOf(5, 6, 7), Notifications.pending(all, cursor = 4).map { it.id })
+    }
+
+    @Test
+    fun `pending alerts ignore read_at so an in-app read cannot swallow the push`() {
+        val all = listOf(note(11).copy(readAt = "2026-01-01T00:00:00Z"), note(12))
+        assertEquals(listOf(11, 12), Notifications.pending(all, cursor = 10).map { it.id })
+    }
+
+    @Test
+    fun `nothing is pending at or below the cursor`() {
+        assertTrue(Notifications.pending(listOf(note(3), note(4)), cursor = 4).isEmpty())
+    }
+
+    @Test
+    fun `cursor stops at the third-lowest of five so the rest are retried`() {
+        val pending = listOf(5, 6, 7, 8, 9)
+        val cursor = Notifications.advancedCursor(pending, postedIds = setOf(5, 6, 7), previous = 4)
+        assertEquals(7, cursor)
+        assertEquals(
+            listOf(8, 9),
+            Notifications.pending(pending.map { note(it) }, cursor).map { it.id },
+        )
+    }
+
+    @Test
+    fun `cursor does not jump over a failed post`() {
+        // 7 failed but 8 posted: stay at 6 so 7 is retried (8 may repeat).
+        assertEquals(6, Notifications.advancedCursor(listOf(5, 6, 7, 8), setOf(5, 6, 8), previous = 4))
+    }
+
+    @Test
+    fun `cursor holds when nothing posted`() {
+        assertEquals(4, Notifications.advancedCursor(listOf(5, 6), emptySet(), previous = 4))
+        assertEquals(0, Notifications.advancedCursor(emptyList(), emptySet(), previous = 0))
     }
 }
