@@ -530,11 +530,12 @@ class ParsingTest {
     }
 
     // The release key's fingerprint, shortened; the gate only ever compares strings.
-    private val releaseKey = ApkIdentity(versionCode = 14, signerSha256 = "d6527d06")
+    private val appPackage = "com.drinkwatch.app"
+    private val releaseKey = ApkIdentity(appPackage, versionCode = 14, signerSha256 = "d6527d06")
 
     @Test
     fun `install gate accepts a newer build from the same key`() {
-        val candidate = ApkIdentity(versionCode = 15, signerSha256 = "D6527D06")
+        val candidate = ApkIdentity(appPackage, versionCode = 15, signerSha256 = "D6527D06")
         assertEquals(InstallVerdict.Installable, installVerdict(releaseKey, candidate, advertisedCode = 15))
     }
 
@@ -542,32 +543,46 @@ class ParsingTest {
     fun `install gate refuses the debug key`() {
         // This is the audited failure: a build machine without keystore.properties
         // produced a debug-signed "release", and the installer cannot replace the app.
-        val candidate = ApkIdentity(versionCode = 15, signerSha256 = "fe7407e2")
+        val candidate = ApkIdentity(appPackage, versionCode = 15, signerSha256 = "fe7407e2")
         val verdict = installVerdict(releaseKey, candidate, advertisedCode = 15)
         assertTrue(verdict is InstallVerdict.Rejected)
         assertTrue((verdict as InstallVerdict.Rejected).message.contains("different key"))
     }
 
     @Test
+    fun `install gate refuses a different package`() {
+        // A valid APK for another app can pass every version and signer check that is
+        // not package-aware, and the installer would replace or reject the app.
+        val candidate = ApkIdentity("com.example.other", versionCode = 15, signerSha256 = "d6527d06")
+        val verdict = installVerdict(releaseKey, candidate, advertisedCode = 15)
+        assertTrue(verdict is InstallVerdict.Rejected)
+        assertTrue((verdict as InstallVerdict.Rejected).message.contains("not com.drinkwatch.app"))
+    }
+
+    @Test
     fun `install gate refuses an APK that is not newer than the install`() {
-        val same = ApkIdentity(versionCode = 14, signerSha256 = "d6527d06")
+        val same = ApkIdentity(appPackage, versionCode = 14, signerSha256 = "d6527d06")
         assertTrue(installVerdict(releaseKey, same, advertisedCode = 14) is InstallVerdict.Rejected)
-        val older = ApkIdentity(versionCode = 13, signerSha256 = "d6527d06")
+        val older = ApkIdentity(appPackage, versionCode = 13, signerSha256 = "d6527d06")
         assertTrue(installVerdict(releaseKey, older, advertisedCode = 13) is InstallVerdict.Rejected)
     }
 
     @Test
-    fun `install gate refuses an APK older than the metadata that advertised it`() {
+    fun `install gate refuses an APK that does not match the advertised build`() {
         // version.json said 15 but the bytes served are 14: the installer would fail.
-        val stale = ApkIdentity(versionCode = 14, signerSha256 = "d6527d06")
+        val stale = ApkIdentity(appPackage, versionCode = 14, signerSha256 = "d6527d06")
         assertTrue(installVerdict(releaseKey, stale, advertisedCode = 15) is InstallVerdict.Rejected)
+        // A newer APK than version.json is also a mismatched pair: the app cannot have
+        // read the notes for it, and the download is worth retrying once metadata lands.
+        val ahead = ApkIdentity(appPackage, versionCode = 16, signerSha256 = "d6527d06")
+        assertTrue(installVerdict(releaseKey, ahead, advertisedCode = 15) is InstallVerdict.Rejected)
     }
 
     @Test
     fun `install gate falls through when a signer or version cannot be read`() {
-        val unknownSigner = ApkIdentity(versionCode = 15, signerSha256 = null)
+        val unknownSigner = ApkIdentity(appPackage, versionCode = 15, signerSha256 = null)
         assertEquals(InstallVerdict.Installable, installVerdict(releaseKey, unknownSigner, 15))
-        val unknownInstalled = ApkIdentity(versionCode = 14, signerSha256 = null)
+        val unknownInstalled = ApkIdentity(appPackage, versionCode = 14, signerSha256 = null)
         assertEquals(InstallVerdict.Installable, installVerdict(unknownInstalled, unknownSigner, 15))
     }
 
