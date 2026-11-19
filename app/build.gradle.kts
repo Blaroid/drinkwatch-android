@@ -26,7 +26,7 @@ android {
     signingConfigs {
         if (keystorePropsFile.exists()) {
             create("release") {
-                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
+                storeFile = keystoreProps.getProperty("storeFile")?.let { rootProject.file(it) }
                 storePassword = keystoreProps.getProperty("storePassword")
                 keyAlias = keystoreProps.getProperty("keyAlias")
                 keyPassword = keystoreProps.getProperty("keyPassword")
@@ -38,11 +38,12 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = if (keystorePropsFile.exists()) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
-            }
+            // Never fall back to the debug key. A debug-signed "release" is refused by
+            // every installed app (INSTALL_FAILED_UPDATE_INCOMPATIBLE), and the uninstall
+            // that follows wipes the token, watchlist and alerts (allowBackup is off).
+            // Null here means an unsigned APK, which the preReleaseBuild check below and
+            // scripts/publish.sh both reject.
+            signingConfig = signingConfigs.findByName("release")
         }
         debug {
             applicationIdSuffix = ".debug"
@@ -66,6 +67,21 @@ android {
 
     packaging {
         resources.excludes += setOf("/META-INF/{AL2.0,LGPL2.1}")
+    }
+}
+
+// Fail a release before it compiles when the key it must be signed with is absent.
+// Checked on the release lifecycle task rather than at configuration time so debug
+// builds and the JVM tests still work on a machine that does not hold the key.
+tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+    doFirst {
+        if (!keystorePropsFile.exists()) {
+            error("keystore.properties missing — a release APK must not fall back to the debug key")
+        }
+        val store = keystoreProps.getProperty("storeFile")?.let { rootProject.file(it) }
+        if (store == null || !store.isFile) {
+            error("release keystore not found (storeFile=${store ?: "unset"}) — a release APK must not fall back to the debug key")
+        }
     }
 }
 
