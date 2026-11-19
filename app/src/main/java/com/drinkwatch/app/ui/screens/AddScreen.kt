@@ -35,7 +35,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -53,6 +52,7 @@ import com.drinkwatch.app.ui.components.ErrorBar
 import com.drinkwatch.app.ui.components.MoneyField
 import com.drinkwatch.app.ui.components.PrimaryButton
 import com.drinkwatch.app.ui.components.ProductPickerDialog
+import com.drinkwatch.app.ui.components.QuickPriceDialog
 import com.drinkwatch.app.ui.components.SectionCard
 import com.drinkwatch.app.ui.components.StorePickerDialog
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
@@ -71,6 +71,8 @@ fun AddScreen() {
     var mode by remember { mutableStateOf(AddMode.Barcode) }
     var product by remember { mutableStateOf<Product?>(null) }
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
+    var quickProduct by remember { mutableStateOf<Product?>(null) }
+    var quickBarcode by remember { mutableStateOf<String?>(null) }
     var barcodeText by remember { mutableStateOf("") }
     var priceText by remember { mutableStateOf("") }
     var store by remember { mutableStateOf<Store?>(null) }
@@ -89,8 +91,6 @@ fun AddScreen() {
     var knownBarcode by remember { mutableStateOf<String?>(null) }
     var suggestionName by remember { mutableStateOf<String?>(null) }
     var suggestionBrand by remember { mutableStateOf<String?>(null) }
-    var focusPrice by remember { mutableStateOf(false) }
-    val priceFocus = remember { androidx.compose.ui.focus.FocusRequester() }
 
     fun lookup(code: String) {
         if (code.isBlank()) return
@@ -113,8 +113,11 @@ fun AddScreen() {
                         promo = "none"
                         photoBytes = null
                         ocrText = null
-                        status = "That is " + found.label() + ". What did you pay?"
-                        focusPrice = true
+                        status = null
+                        // Ask for the price in a popup: the inline form is a long way
+                        // down the screen, which is why a repeat scan looked inert.
+                        quickProduct = found
+                        quickBarcode = hit.barcode
                     } else {
                         unknownBarcode = code
                         suggestionName = hit.suggestedName
@@ -125,13 +128,6 @@ fun AddScreen() {
                 .onFailure { error = it.message }
             busy = false
         }
-    }
-
-    androidx.compose.runtime.LaunchedEffect(focusPrice) {
-        if (!focusPrice) return@LaunchedEffect
-        focusPrice = false
-        kotlinx.coroutines.delay(150)
-        runCatching { priceFocus.requestFocus() }
     }
 
     val scanner = remember { GmsBarcodeScanning.getClient(context) }
@@ -323,12 +319,7 @@ fun AddScreen() {
                     ) { Text("Choose drink") }
                 }
                 Spacer(Modifier.height(10.dp))
-                MoneyField(
-                    priceText,
-                    { priceText = it },
-                    "Price on the tag",
-                    modifier = Modifier.focusRequester(priceFocus),
-                )
+                MoneyField(priceText, { priceText = it }, "Price on the tag")
                 Spacer(Modifier.height(10.dp))
                 if (store != null) {
                     Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
@@ -398,6 +389,23 @@ fun AddScreen() {
             },
         )
     }
+    quickProduct?.let { chosen ->
+        QuickPriceDialog(
+            product = chosen,
+            barcode = quickBarcode.orEmpty(),
+            api = api,
+            prefs = prefs,
+            onDismiss = { quickProduct = null },
+            onSaved = { message ->
+                quickProduct = null
+                status = null
+                // Toast, not a line at the bottom of a long scrolling screen: the
+                // confirmation has to be visible where the tap happened.
+                android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
+            },
+        )
+    }
+
     if (pendingDialog && unknownBarcode != null) {
         NewProductDialog(
             barcode = unknownBarcode!!,
@@ -410,8 +418,10 @@ fun AddScreen() {
                 pendingDialog = false
                 product = added
                 knownBarcode = unknownBarcode
-                status = message
-                focusPrice = true
+                status = null
+                android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
+                quickProduct = added
+                quickBarcode = unknownBarcode
             },
         )
     }
