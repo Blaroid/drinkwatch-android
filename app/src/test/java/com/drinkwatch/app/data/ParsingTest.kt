@@ -47,6 +47,31 @@ class ParsingTest {
     }
 
     @Test
+    fun `ocr ignores a unit price even with no dollar sign`() {
+        // Servo and IGA tags often print no $: the bottle size must not become the price.
+        assertEquals(429, Ocr.parsePrice("MOTHER ENERGY 1.25L / SPECIAL 4.29"))
+        assertEquals(429, Ocr.parsePrice("MOTHER ENERGY 1.25L\nSPECIAL 4.29"))
+        assertEquals(429, Ocr.parsePrice("Mother 1.25Litre\n4.29"))
+    }
+
+    @Test
+    fun `unit suffix is told apart from the next line's size`() {
+        assertTrue(Ocr.isUnitSuffix("L\nSPECIAL 4.29"))
+        assertTrue(Ocr.isUnitSuffix("Litre\n4.29"))
+        assertTrue(Ocr.isUnitSuffix("ml\n4.29"))
+        assertTrue(Ocr.isUnitSuffix("kg ea"))
+        assertTrue(Ocr.isUnitSuffix(" / 1L"))
+        assertTrue(Ocr.isUnitSuffix(" per 100g"))
+        assertTrue(Ocr.isUnitSuffix(" / 100ml"))
+        assertFalse(Ocr.isUnitSuffix(" each\n$7.00"))
+        assertFalse(Ocr.isUnitSuffix(" ea"))
+        assertFalse(Ocr.isUnitSuffix(""))
+        // A bare size on the next line names that line's product, not this figure.
+        assertFalse(Ocr.isUnitSuffix("\n1L"))
+        assertFalse(Ocr.isUnitSuffix(" GST included"))
+    }
+
+    @Test
     fun `ocr ignores implausible numbers`() {
         assertNull(Ocr.parsePrice("500ml\n32mg/100ml\n2024"))
         assertNull(Ocr.parsePrice(""))
