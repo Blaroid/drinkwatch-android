@@ -87,8 +87,10 @@ Deliberate choices:
 * **org.json over kotlinx.serialization** - no compiler plugin or codegen for a few
   small payloads.
 * **LocationManager over FusedLocationProvider** - works without Play Services.
-* **Text recognition is the unbundled ML Kit model** (downloaded via Play Services
-  on first use): the APK is 15 MB instead of 63 MB.
+* **Text recognition is the bundled ML Kit model.** It was unbundled to keep the APK
+  small, but the model only downloads through Play Services and on a device without
+  it the scan silently returned nothing — the worst possible failure for a price app
+  used standing in a shop. The APK is bigger; OCR now works offline.
 * **No ViewModels yet** - each screen owns its state with `remember`/effects.
 
 ## Building
@@ -133,6 +135,8 @@ is backed up to the redmax disk.
 | 0.4.1 | barcode flow: name/size autocomplete for new cans, and a second scan of a known can goes straight to the price prompt |
 | 0.5.0 | merge train: OkHttp disk cache for /v1/widget, watchlist recovery, notification ordering, alert location filter, basket totals with fuel |
 | 0.5.1 | barcode price entry is a popup with the can prefilled and the field focused; save confirmation is a toast |
+| 0.5.2 | fix: gallery price-tag photos are OCR'd (the copy raced the decode); OCR problems show a toast |
+| 0.6.0 | bundled ML Kit text recognition, so the price-tag scan works offline |
 | 0.5.0 | merge train: HTTP cache + ETag revalidation, watchlist recovery after a renamed drink, alert notifications actually posted, alert location filter, basket totals include fuel |
 
 ## Privacy

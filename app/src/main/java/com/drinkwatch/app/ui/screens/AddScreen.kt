@@ -139,11 +139,20 @@ fun AddScreen() {
     }
 
     var pendingFile by remember { mutableStateOf<java.io.File?>(null) }
+    fun reportPhotoProblem(message: String) {
+        error = message
+        // The inline error sits below a long scrolling form, so it is easy to miss
+        // exactly when nothing else happens on screen.
+        android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
+    }
+
     fun processPhoto(file: java.io.File) {
         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val bitmap = Images.load(file)
             if (bitmap == null) {
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { error = "Could not read that photo" }
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    reportPhotoProblem("Could not read that photo")
+                }
                 return@launch
             }
             val jpeg = Images.toJpeg(bitmap)
@@ -151,7 +160,11 @@ fun AddScreen() {
             Ocr.readTag(bitmap) { cents, text ->
                 scope.launch(kotlinx.coroutines.Dispatchers.Main) {
                     ocrText = text.take(200)
-                    if (cents != null) priceText = String.format(java.util.Locale.US, "%.2f", cents / 100.0)
+                    when {
+                        cents != null -> priceText = String.format(java.util.Locale.US, "%.2f", cents / 100.0)
+                        text.isBlank() -> reportPhotoProblem("Couldn't read that tag — type the price instead")
+                        else -> reportPhotoProblem("Saw text but no price — type it in")
+                    }
                 }
             }
         }
@@ -166,14 +179,23 @@ fun AddScreen() {
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         val file = Images.tempFile(context, "picked")
+        // Copy and decode in the same coroutine: launching the copy and decoding
+        // straight away raced it, and the decoder saw an empty file, so picking an
+        // image from the gallery appeared to do nothing at all.
         scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            runCatching {
+            val copied = runCatching {
                 context.contentResolver.openInputStream(uri)?.use { source ->
                     file.outputStream().use { target -> source.copyTo(target) }
+                } != null
+            }.getOrDefault(false)
+            if (!copied) {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    reportPhotoProblem("Could not read that image")
                 }
-            }.onFailure { error = "Could not read that image" }
+                return@launch
+            }
+            processPhoto(file)
         }
-        processPhoto(file)
     }
 
     fun shoot() {
