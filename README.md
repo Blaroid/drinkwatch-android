@@ -127,6 +127,7 @@ is backed up to the redmax disk.
 | 0.3.3 | reload on resume; refresh right after tracking |
 | 0.3.4 | picker rows show the clean label only |
 | 0.4.0 | self-update: launch prompt + "Check for updates" in Settings; Settings reachable from the You tab |
+| 0.5.0 | merge train: HTTP cache + ETag revalidation, watchlist recovery after a renamed drink, alert notifications actually posted, alert location filter, basket totals include fuel |
 
 ## Privacy
 
