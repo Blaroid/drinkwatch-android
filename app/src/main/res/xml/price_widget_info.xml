@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Four columns by two rows is the smallest useful footprint: ~110 dp of height,
+  which holds the header and two of the four price rows. The widget asks
+  [LocalSize] for the space it was actually given and lays out only the rows
+  that fit, so a resize (or a larger font scale) drops rows instead of clipping
+  them; on a 4-cell-high widget the promised four rows appear.
+-->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     android:minWidth="250dp"
     android:minHeight="110dp"
