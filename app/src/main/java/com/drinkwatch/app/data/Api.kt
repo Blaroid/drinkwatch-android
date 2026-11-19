@@ -9,12 +9,10 @@ import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
 class ApiException(message: String, val code: Int = 0) : Exception(message)
 
@@ -24,13 +22,14 @@ class ApiException(message: String, val code: Int = 0) : Exception(message)
  * JSON is parsed by hand with org.json: the payloads are small, and this keeps the
  * app free of serialization plugins/codegen.
  */
-class Api(private val prefs: Prefs) {
+class Api(
+    private val prefs: Prefs,
+    /** Where the response cache lives; null disables caching (tests). */
+    cacheDir: java.io.File? = null,
+) {
 
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(35, TimeUnit.SECONDS)
-        .callTimeout(70, TimeUnit.SECONDS)
-        .build()
+    private val transport = HttpTransport(cacheDir)
+    private val client = transport.http
 
     private val jsonType = "application/json; charset=utf-8".toMediaType()
     private val jpegType = "image/jpeg".toMediaType()
@@ -45,7 +44,7 @@ class Api(private val prefs: Prefs) {
         return url.build()
     }
 
-    private fun execute(request: Request): String = client.newCall(request).execute().use { response ->
+    private fun execute(request: Request): String = transport.call(request).use { response ->
         val body = response.body?.string() ?: ""
         if (!response.isSuccessful) {
             val detail = runCatching { JSONObject(body).optString("detail") }.getOrNull()
@@ -142,24 +141,80 @@ class Api(private val prefs: Prefs) {
         ),
     )
 
+    /**
+     * Widget rows, surviving tracked drinks that were renamed or merged server-side.
+     *
+     * /v1/widget 404s when any requested slug is gone and names only the first
+     * offender, so a list with two dead drinks needs two passes. Only that slug is
+     * removed and the pruned list is persisted plus explained through
+     * [Prefs.trackedNote]: the tracked list is the user's only personal state, so it
+     * must never be thrown away wholesale.
+     *
+     * @param cache store the payload as the widget's offline copy. The worker owns
+     *   this; the home screen's payload carries suggestion rows the widget should
+     *   not show.
+     */
     suspend fun widgetItems(
         lat: Double,
         lon: Double,
         radiusKm: Int,
         slugs: List<String>,
         suggest: Int = 0,
+        cache: Boolean = false,
     ): List<WidgetItem> {
-        val payload = try {
-            widget(lat, lon, radiusKm, slugs, suggest)
-        } catch (error: ApiException) {
-            // A tracked slug that no longer exists makes the whole call 404: drop
-            // the stale ones and fall back to the server's default list.
-            if (error.code != 404 || slugs.isEmpty()) throw error
-            prefs.trackedSlugs = emptyList()
-            widget(lat, lon, radiusKm, emptyList(), suggest)
+        val (payload, dropped) = recoveringWidget(lat, lon, radiusKm, slugs, suggest)
+
+        if (dropped.isNotEmpty()) {
+            // The response that dropped a slug no longer mentions it, so its name
+            // can only come from the previous payload.
+            val labels = itemsFromCache(prefs.widgetCache).associate { it.slug to it.label }
+            // Remove only what went stale: the user may have edited the list while
+            // the request was in flight.
+            prefs.trackedSlugs = prefs.trackedSlugs.filterNot { it in dropped }
+            staleNote(dropped, labels)?.let { prefs.trackedNote = it }
         }
+        if (cache) {
+            prefs.widgetCache = payload.toString()
+            prefs.widgetCacheAt = System.currentTimeMillis()
+        }
+
         val items = payload.optJSONArray("items") ?: JSONArray()
         return (0 until items.length()).map { items.getJSONObject(it).toWidgetItem() }
+    }
+
+    /** The widget payload plus the slugs a 404 recovery had to remove to get it. */
+    private suspend fun recoveringWidget(
+        lat: Double,
+        lon: Double,
+        radiusKm: Int,
+        slugs: List<String>,
+        suggest: Int,
+    ): Pair<JSONObject, List<String>> {
+        var wanted = slugs
+        val dropped = mutableListOf<String>()
+        var giveUp = false
+        while (true) {
+            val ask = if (giveUp) emptyList() else wanted
+            try {
+                val payload = widget(
+                    lat, lon, radiusKm, ask,
+                    suggest = if (ask.isEmpty()) 0 else suggest,
+                )
+                return payload to dropped
+            } catch (error: ApiException) {
+                if (error.code != 404 || ask.isEmpty()) throw error
+                val pruned = pruneStale(ask, error.message)
+                if (pruned == ask) {
+                    // Cannot tell which drink the server objects to. Show the default
+                    // list for this run but keep the stored one: deleting the wrong
+                    // drink is worse than a fallback, and the catalogue may come back.
+                    giveUp = true
+                } else {
+                    dropped.addAll(ask.filterNot { it in pruned })
+                    wanted = pruned
+                }
+            }
+        }
     }
 
     suspend fun prices(slug: String, lat: Double, lon: Double, radiusKm: Int): ProductPrices {
@@ -307,24 +362,14 @@ class Api(private val prefs: Prefs) {
     suspend fun alerts(): List<PriceAlert> {
         val array = getArray("/v1/alerts", auth = true)
         return (0 until array.length())
-            .map { index ->
-                val row = array.getJSONObject(index)
-                PriceAlert(
-                    id = row.getInt("id"),
-                    productId = if (row.isNull("product_id")) null else row.getInt("product_id"),
-                    familySlug = row.str("family_slug"),
-                    chainCode = row.str("chain_code"),
-                    storeId = if (row.isNull("store_id")) null else row.getInt("store_id"),
-                    maxPriceCents = row.getInt("max_price_cents"),
-                    isActive = row.optBoolean("is_active", true),
-                    createdAt = row.optString("created_at"),
-                )
-            }
+            .map { array.getJSONObject(it).toPriceAlert() }
             .filter { it.isActive }
     }
 
-    suspend fun createAlert(slug: String, maxPriceCents: Int) {
-        postJson("/v1/alerts", JSONObject().put("product_slug", slug).put("max_price_cents", maxPriceCents))
+    suspend fun createAlert(request: AlertRequest) {
+        val payload = JSONObject()
+        request.toFields().forEach { (key, value) -> payload.put(key, value) }
+        postJson("/v1/alerts", payload)
     }
 
     suspend fun deleteAlert(id: Int) {
@@ -456,6 +501,42 @@ class Api(private val prefs: Prefs) {
     }
 }
 
+// ------------------------------------------------------- stale tracked slugs
+
+/**
+ * Drop the one slug the server rejected, or keep the list untouched when the
+ * detail does not name a slug we actually sent.
+ *
+ * The API answers `404 {"detail": "unknown product slug: <slug>"}`; taking the
+ * tail after the last colon rather than the exact wording means a reworded server
+ * message still recovers, while the membership check stops a truncated body from
+ * deleting an innocent drink.
+ */
+internal fun pruneStale(slugs: List<String>, detail: String?): List<String> {
+    val named = detail?.trim()?.substringAfterLast(':')?.trim().orEmpty()
+    if (named.isEmpty() || named !in slugs) return slugs
+    return slugs.filterNot { it == named }
+}
+
+/**
+ * What the home screen says after a stale slug was dropped: the drink's name from
+ * the last payload when we still have it, otherwise the slug with the dashes
+ * opened up ("v-blue" -> "v blue"). Null when nothing was dropped.
+ */
+internal fun staleNote(dropped: List<String>, labels: Map<String, String>): String? {
+    if (dropped.isEmpty()) return null
+    val names = dropped.map { slug ->
+        labels[slug]?.takeIf { it.isNotBlank() } ?: slug.replace('-', ' ')
+    }
+    val listed = when (names.size) {
+        1 -> names[0]
+        2 -> names.joinToString(" and ")
+        else -> names.dropLast(1).joinToString(", ") + " and " + names.last()
+    }
+    val verb = if (names.size == 1) " is" else " are"
+    return "$listed$verb no longer listed — removed from your drinks"
+}
+
 // -------------------------------------------------------------------- parsing
 
 internal fun JSONObject.str(key: String): String? =
@@ -549,7 +630,10 @@ internal fun JSONObject.toBasketResult(): BasketResult {
                 chainCode = store.optString("chain_code"),
                 suburb = store.str("suburb"),
                 distanceKm = store.optDouble("distance_km", 0.0),
+                driveDistanceKm = if (store.isNull("drive_distance_km")) null else store.optDouble("drive_distance_km"),
                 totalCents = store.getInt("total_cents"),
+                fuelCostCents = if (store.isNull("fuel_cost_cents")) null else store.optInt("fuel_cost_cents"),
+                totalWithFuelCents = if (store.isNull("total_with_fuel_cents")) null else store.optInt("total_with_fuel_cents"),
                 complete = store.optBoolean("complete", false),
                 items = (0 until items.length()).map { itemIndex ->
                     val line = items.getJSONObject(itemIndex)
@@ -566,6 +650,8 @@ internal fun JSONObject.toBasketResult(): BasketResult {
                 },
             )
         },
+        multiStoreItemsCents = if (isNull("multi_store_items_cents")) null else optInt("multi_store_items_cents"),
+        multiStoreFuelCostCents = if (isNull("multi_store_fuel_cost_cents")) null else optInt("multi_store_fuel_cost_cents"),
         multiStoreTotalCents = if (isNull("multi_store_total_cents")) null else optInt("multi_store_total_cents"),
         multiStorePlan = (0 until plan.length()).map { index ->
             val line = plan.getJSONObject(index)
@@ -607,6 +693,42 @@ internal fun JSONObject.toMaxCaffeine(): MaxCaffeine {
         exceedsDailyLimit = optBoolean("exceeds_daily_limit", false),
         storesUsed = optInt("stores_used", 1),
     )
+}
+
+internal fun JSONObject.toPriceAlert(): PriceAlert = PriceAlert(
+    id = getInt("id"),
+    productId = if (isNull("product_id")) null else getInt("product_id"),
+    familySlug = str("family_slug"),
+    chainCode = str("chain_code"),
+    storeId = if (isNull("store_id")) null else getInt("store_id"),
+    // Both triggers are nullable server-side, so an old alert can carry neither.
+    maxPriceCents = if (isNull("max_price_cents")) null else optInt("max_price_cents"),
+    minDropPercent = if (isNull("min_drop_percent")) null else optInt("min_drop_percent"),
+    lat = if (isNull("lat")) null else optDouble("lat"),
+    lon = if (isNull("lon")) null else optDouble("lon"),
+    radiusKm = if (isNull("radius_km")) null else optDouble("radius_km"),
+    isActive = optBoolean("is_active", true),
+    createdAt = optString("created_at"),
+)
+
+/**
+ * Body fields for POST /v1/alerts.
+ *
+ * Split out from the JSONObject so the shape can be unit tested. Two rules matter:
+ * the server wants lat, lon and radius_km together or not at all, and it rejects a
+ * request with neither max_price_cents nor min_drop_percent. Sending no location at
+ * all is what made alerts fire from the far side of the city, so the caller always
+ * passes the device's stored position.
+ */
+internal fun AlertRequest.toFields(): Map<String, Any> = buildMap {
+    put("product_slug", productSlug)
+    maxPriceCents?.let { put("max_price_cents", it) }
+    minDropPercent?.let { put("min_drop_percent", it) }
+    if (lat != null && lon != null && radiusKm != null) {
+        put("lat", lat)
+        put("lon", lon)
+        put("radius_km", radiusKm)
+    }
 }
 
 internal fun JSONObject.toRoutePlan(): RoutePlan {

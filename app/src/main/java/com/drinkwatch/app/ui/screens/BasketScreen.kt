@@ -42,6 +42,8 @@ import com.drinkwatch.app.data.BasketStorage
 import com.drinkwatch.app.data.Price
 import com.drinkwatch.app.data.RoutePlan
 import com.drinkwatch.app.data.ServiceLocator
+import com.drinkwatch.app.data.cost
+import com.drinkwatch.app.data.multiStoreCost
 import com.drinkwatch.app.ui.components.Chip
 import com.drinkwatch.app.ui.components.ChipTone
 import com.drinkwatch.app.ui.components.ErrorBar
@@ -148,6 +150,9 @@ fun BasketScreen() {
             result?.let { basket ->
                 val best = basket.stores.firstOrNull { it.complete }
                 if (best != null) {
+                    // The server ranks on items + fuel, so that is the number to headline;
+                    // the shelf total alone would look cheaper than the split plan below.
+                    val cost = best.cost()
                     SectionCard(title = "Cheapest single store") {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
@@ -158,13 +163,29 @@ fun BasketScreen() {
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
-                            Text(
-                                Price.aud(best.totalCents),
-                                style = MaterialTheme.typography.titleLarge,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontWeight = FontWeight.SemiBold,
-                            )
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text(
+                                    Price.aud(cost.totalCents),
+                                    style = MaterialTheme.typography.titleLarge,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    cost.basisLabel(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            cost.breakdown() + best.driveDistanceKm
+                                ?.takeIf { cost.includesFuel() }
+                                ?.let { " · " + Price.km(it) + " round trip" }
+                                .orEmpty(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                         best.items.forEach { line ->
                             Spacer(Modifier.height(6.dp))
                             Text(
@@ -180,12 +201,34 @@ fun BasketScreen() {
                     }
                 }
 
-                basket.multiStoreTotalCents?.let { total ->
+                basket.multiStoreCost()?.let { cost ->
                     SectionCard(title = "Split across stores") {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "Cheapest line from each store",
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Medium,
+                            )
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text(
+                                    Price.aud(cost.totalCents),
+                                    style = MaterialTheme.typography.titleLarge,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    cost.basisLabel(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
                         Text(
-                            total.toString().let { Price.aud(total) } + " total",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
+                            cost.breakdown(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         basket.multiStorePlan.forEach { line ->
                             Text(
@@ -212,7 +255,8 @@ fun BasketScreen() {
                                 )
                                 if (!store.complete) Chip("missing items", ChipTone.Warn)
                                 Spacer(Modifier.width(8.dp))
-                                Text(Price.aud(store.totalCents), style = MaterialTheme.typography.bodySmall)
+                                // Same basis as the cards above, so the list reads as the server's ranking.
+                                Text(Price.aud(store.cost().totalCents), style = MaterialTheme.typography.bodySmall)
                             }
                         }
                     }

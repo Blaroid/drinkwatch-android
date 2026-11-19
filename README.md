@@ -129,8 +129,9 @@ is backed up to the redmax disk.
 | 0.3.2 | location title falls back to the default area, not "My location" |
 | 0.3.3 | reload on resume; refresh right after tracking |
 | 0.3.4 | picker rows show the clean label only |
-| 0.4.1 | barcode flow: name/size autocomplete for new cans, and a second scan of a known can goes straight to the price prompt |
 | 0.4.0 | self-update: launch prompt + "Check for updates" in Settings; Settings reachable from the You tab |
+| 0.4.1 | barcode flow: name/size autocomplete for new cans, and a second scan of a known can goes straight to the price prompt |
+| 0.5.0 | merge train: HTTP cache + ETag revalidation, watchlist recovery after a renamed drink, alert notifications actually posted, alert location filter, basket totals include fuel |
 
 ## Privacy
 

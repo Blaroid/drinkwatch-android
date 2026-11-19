@@ -93,6 +93,14 @@ class Prefs(context: Context) {
         get() = store.getString(KEY_BASKET, "") ?: ""
         set(value) = store.edit().putString(KEY_BASKET, value).apply()
 
+    /**
+     * One-line explanation of an automatic change to the tracked list (a drink
+     * vanished from the catalogue), shown once on the home screen.
+     */
+    var trackedNote: String?
+        get() = store.getString(KEY_TRACKED_NOTE, null)
+        set(value) = store.edit().putString(KEY_TRACKED_NOTE, value).apply()
+
     /** Version the user chose to skip, so the launch prompt does not nag. */
     var skippedUpdateCode: Int
         get() = store.getInt(KEY_SKIPPED_UPDATE, 0)
@@ -114,10 +122,12 @@ class Prefs(context: Context) {
         if (slug.isBlank()) return
         val current = trackedSlugs
         if (slug !in current) trackedSlugs = current + slug
+        trackedNote = null
     }
 
     fun removeTracked(slug: String) {
         trackedSlugs = trackedSlugs.filterNot { it == slug }
+        trackedNote = null
     }
 
     fun hasLocation(): Boolean = store.getString(KEY_LAT, null) != null
@@ -135,6 +145,7 @@ class Prefs(context: Context) {
         private const val KEY_HOME_LABEL = "home_label"
         private const val KEY_RADIUS = "radius_km"
         private const val KEY_TRACKED = "tracked"
+        private const val KEY_TRACKED_NOTE = "tracked_note"
         private const val KEY_WIDGET_CACHE = "widget_cache"
         private const val KEY_WIDGET_AT = "widget_cache_at"
         private const val KEY_LAST_NOTIFICATION = "last_notification_id"

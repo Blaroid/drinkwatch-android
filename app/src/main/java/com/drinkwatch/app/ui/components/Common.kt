@@ -2,6 +2,7 @@ package com.drinkwatch.app.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -24,6 +26,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -33,6 +36,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -43,6 +47,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.drinkwatch.app.data.AlertRequest
+import com.drinkwatch.app.data.Alerts
 import com.drinkwatch.app.data.Api
 import com.drinkwatch.app.data.Prefs
 import com.drinkwatch.app.data.Price
@@ -136,6 +142,30 @@ fun ErrorBar(message: String?, onRetry: (() -> Unit)? = null) {
                 modifier = Modifier.weight(1f),
             )
             if (onRetry != null) TextButton(onClick = onRetry) { Text("Retry") }
+        }
+    }
+}
+
+/** A one-off explanation that is not an error, e.g. a followed drink disappeared. */
+@Composable
+fun NoteBar(message: String?, onDismiss: (() -> Unit)? = null) {
+    if (message == null) return
+    Surface(
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                message,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                modifier = Modifier.weight(1f).padding(vertical = 6.dp),
+            )
+            if (onDismiss != null) TextButton(onClick = onDismiss) { Text("Dismiss") }
         }
     }
 }
@@ -316,4 +346,106 @@ fun KeyValueRow(key: String, value: String, emphasis: Boolean = false) {
             fontWeight = if (emphasis) FontWeight.SemiBold else FontWeight.Normal,
         )
     }
+}
+
+/**
+ * Collects a new price alert: a price ceiling, a relative drop, or both.
+ *
+ * Either trigger is enough for the server, so both fields start empty and the user
+ * fills in whichever they care about. The alert is always pinned to the device's
+ * stored position: an alert without lat/lon/radius_km makes the server scan every
+ * store it knows about and notify about shops on the far side of the city, which is
+ * the whole reason the radius exists.
+ */
+@Composable
+fun NewAlertDialog(
+    productSlug: String,
+    productLabel: String,
+    prefs: Prefs,
+    onDismiss: () -> Unit,
+    onSubmit: (AlertRequest) -> Unit,
+) {
+    var threshold by remember { mutableStateOf("") }
+    var dropText by remember { mutableStateOf("") }
+    var radiusKm by remember { mutableIntStateOf(prefs.radiusKm) }
+    // Offer the usual radii, plus whatever the device is set to if that is not one.
+    val radii = remember(prefs.radiusKm) {
+        val base = listOf(5, 10, 15, 25, 50)
+        if (prefs.radiusKm in base) base else (base + prefs.radiusKm).sorted()
+    }
+
+    val ceiling = Price.parseToCents(threshold)
+    val drop = Alerts.parseDropPercent(dropText)
+    // A half-typed number must not silently mean "no trigger", so a non-blank field
+    // that does not parse blocks the button instead of being dropped.
+    val canSubmit = (threshold.isBlank() || ceiling != null) &&
+        (dropText.isBlank() || drop != null) &&
+        (ceiling != null || drop != null)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Alert me when it drops") },
+        text = {
+            Column {
+                Text(productLabel, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(10.dp))
+                MoneyField(threshold, { threshold = it }, "Under (optional)")
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = dropText,
+                    onValueChange = { dropText = it.filter { ch -> ch.isDigit() || ch == '%' } },
+                    label = { Text("Or any drop of at least (optional)") },
+                    suffix = { Text("%") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "Only stores near " + prefs.locationTitle(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    radii.forEach { km ->
+                        FilterChip(
+                            selected = km == radiusKm,
+                            onClick = { radiusKm = km },
+                            label = { Text(km.toString() + " km") },
+                        )
+                    }
+                }
+                if (!canSubmit) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Set a price, a drop, or both.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = canSubmit,
+                onClick = {
+                    onSubmit(
+                        AlertRequest(
+                            productSlug = productSlug,
+                            maxPriceCents = ceiling,
+                            minDropPercent = drop,
+                            lat = prefs.lat,
+                            lon = prefs.lon,
+                            radiusKm = radiusKm.toDouble(),
+                        )
+                    )
+                },
+            ) { Text("Set alert") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }

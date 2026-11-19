@@ -131,8 +131,14 @@ data class BasketStore(
     val storeName: String,
     val chainCode: String,
     val suburb: String?,
+    /** Straight-line distance from the origin, what the store list shows. */
     val distanceKm: Double,
+    /** Round-trip road distance, the distance the fuel figure below was priced on. */
+    val driveDistanceKm: Double?,
+    /** Items only, see [cost] for the basis the server ranks on. */
     val totalCents: Int,
+    val fuelCostCents: Int?,
+    val totalWithFuelCents: Int?,
     val complete: Boolean,
     val items: List<BasketLine>,
 )
@@ -140,6 +146,8 @@ data class BasketStore(
 data class BasketResult(
     val radiusKm: Double,
     val stores: List<BasketStore>,
+    val multiStoreItemsCents: Int?,
+    val multiStoreFuelCostCents: Int?,
     val multiStoreTotalCents: Int?,
     val multiStorePlan: List<BasketPlanLine>,
     val savingsVsWorstCents: Int?,
@@ -211,15 +219,36 @@ data class BarcodeHit(
     val pendingHint: String?,
 )
 
+/**
+ * A stored alert. Both triggers are optional: an absolute ceiling and/or a drop
+ * below the chain's 30-day median. Lat/lon/radius_km are the location filter the
+ * server applies, and are all present or all null.
+ */
 data class PriceAlert(
     val id: Int,
     val productId: Int?,
     val familySlug: String?,
     val chainCode: String?,
     val storeId: Int?,
-    val maxPriceCents: Int,
+    val maxPriceCents: Int?,
+    val minDropPercent: Int?,
+    val lat: Double?,
+    val lon: Double?,
+    val radiusKm: Double?,
     val isActive: Boolean,
     val createdAt: String,
+) {
+    fun summary(): String = Alerts.summary(maxPriceCents, minDropPercent, chainCode, radiusKm)
+}
+
+/** One alert to create for a product, as POSTed to /v1/alerts. */
+data class AlertRequest(
+    val productSlug: String,
+    val maxPriceCents: Int? = null,
+    val minDropPercent: Int? = null,
+    val lat: Double? = null,
+    val lon: Double? = null,
+    val radiusKm: Double? = null,
 )
 
 data class AppNotification(

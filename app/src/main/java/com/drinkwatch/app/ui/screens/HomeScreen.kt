@@ -27,7 +27,6 @@ import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -56,6 +55,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.drinkwatch.app.data.Alerts
 import com.drinkwatch.app.data.Geo
 import com.drinkwatch.app.data.PlaceName
 import com.drinkwatch.app.data.Api
@@ -70,7 +70,8 @@ import com.drinkwatch.app.ui.components.ChipTone
 import com.drinkwatch.app.ui.components.DealChip
 import com.drinkwatch.app.ui.components.ErrorBar
 import com.drinkwatch.app.ui.components.LoadingRow
-import com.drinkwatch.app.ui.components.MoneyField
+import com.drinkwatch.app.ui.components.NoteBar
+import com.drinkwatch.app.ui.components.NewAlertDialog
 import com.drinkwatch.app.widget.WidgetRefresh
 import kotlinx.coroutines.launch
 
@@ -85,6 +86,7 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
     var items by remember { mutableStateOf<List<WidgetItem>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
+    var note by remember { mutableStateOf(prefs.trackedNote) }
     var detailSlug by remember { mutableStateOf<String?>(null) }
     var locationTitle by remember { mutableStateOf(prefs.locationTitle()) }
     var locating by remember { mutableStateOf(false) }
@@ -104,6 +106,7 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
                 )
             }.onSuccess {
                 items = it
+                note = prefs.trackedNote
                 WidgetRefresh.refreshNow(context)
             }.onFailure {
                 error = it.message
@@ -177,6 +180,14 @@ fun HomeScreen(onOpenSettings: () -> Unit) {
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             error?.let { Box(Modifier.padding(horizontal = 16.dp)) { ErrorBar(it, onRetry = { load() }) } }
+            note?.let {
+                Box(Modifier.padding(horizontal = 16.dp)) {
+                    NoteBar(it, onDismiss = {
+                        prefs.trackedNote = null
+                        note = null
+                    })
+                }
+            }
             if (loading && items.isEmpty()) LoadingRow("Finding prices…")
             if (prefs.trackedSlugs.isEmpty() && items.isNotEmpty()) {
                 Text(
@@ -417,34 +428,26 @@ private fun DrinkDetailSheet(
     }
 
     if (alertOpen) {
-        var threshold by remember { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = { alertOpen = false },
-            title = { Text("Alert me when it drops") },
-            text = {
-                Column {
-                    Text("Notify me when this is under:", style = MaterialTheme.typography.bodySmall)
-                    Spacer(Modifier.height(8.dp))
-                    MoneyField(threshold, { threshold = it }, "Price")
+        NewAlertDialog(
+            productSlug = slug,
+            productLabel = data?.product?.label() ?: slug,
+            prefs = prefs,
+            onDismiss = { alertOpen = false },
+            onSubmit = { request ->
+                scope.launch {
+                    runCatching { api.createAlert(request) }
+                        .onSuccess {
+                            alertMessage = "Alert set: " + Alerts.summary(
+                                request.maxPriceCents,
+                                request.minDropPercent,
+                                null,
+                                request.radiusKm,
+                            )
+                            alertOpen = false
+                        }
+                        .onFailure { alertMessage = it.message }
                 }
             },
-            confirmButton = {
-                TextButton(
-                    enabled = Price.parseToCents(threshold) != null,
-                    onClick = {
-                        val cents = Price.parseToCents(threshold) ?: return@TextButton
-                        scope.launch {
-                            runCatching { api.createAlert(slug, cents) }
-                                .onSuccess {
-                                    alertMessage = "Alert set at " + Price.aud(cents)
-                                    alertOpen = false
-                                }
-                                .onFailure { alertMessage = it.message }
-                        }
-                    },
-                ) { Text("Set alert") }
-            },
-            dismissButton = { TextButton(onClick = { alertOpen = false }) { Text("Cancel") } },
         )
     }
 }

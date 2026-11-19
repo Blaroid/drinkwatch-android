@@ -18,10 +18,10 @@ import androidx.work.WorkerParameters
 import com.drinkwatch.app.App
 import com.drinkwatch.app.R
 import com.drinkwatch.app.data.Api
+import com.drinkwatch.app.data.Notifications
 import com.drinkwatch.app.data.ServiceLocator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
@@ -60,9 +60,9 @@ class WidgetWorker(context: Context, params: WorkerParameters) : CoroutineWorker
         val api = ServiceLocator.api(applicationContext)
 
         val fetch = runCatching {
-            val payload = api.widget(prefs.lat, prefs.lon, prefs.radiusKm, prefs.trackedSlugs)
-            prefs.widgetCache = payload.toString()
-            prefs.widgetCacheAt = System.currentTimeMillis()
+            // Same path as the screens: a renamed tracked drink is pruned and
+            // retried instead of failing every run forever.
+            api.widgetItems(prefs.lat, prefs.lon, prefs.radiusKm, prefs.trackedSlugs, cache = true)
         }
 
         runCatching { PriceWidget().updateAll(applicationContext) }
@@ -78,8 +78,10 @@ class WidgetWorker(context: Context, params: WorkerParameters) : CoroutineWorker
     private suspend fun pollNotifications(api: Api, prefs: com.drinkwatch.app.data.Prefs) {
         if (prefs.token.isNullOrBlank()) return
         val notifications = runCatching { api.notifications() }.getOrNull() ?: return
-        val newest = notifications.filter { it.id > prefs.lastSeenNotificationId && it.readAt == null }
-        if (newest.isEmpty()) return
+        // Deliberately not filtered on readAt: the cursor is what decides delivery, so
+        // reading an alert in the You tab can never suppress its notification.
+        val pending = Notifications.pending(notifications, prefs.lastSeenNotificationId)
+        if (pending.isEmpty()) return
 
         val manager = applicationContext.getSystemService(NotificationManager::class.java) ?: return
         val open = PendingIntent.getActivity(
@@ -89,8 +91,8 @@ class WidgetWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        var newestPosted = prefs.lastSeenNotificationId
-        newest.take(3).forEach { item ->
+        val posted = mutableSetOf<Int>()
+        pending.forEach { item ->
             val notification = NotificationCompat.Builder(applicationContext, App.CHANNEL_ALERTS)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(item.title)
@@ -99,11 +101,14 @@ class WidgetWorker(context: Context, params: WorkerParameters) : CoroutineWorker
                 .setContentIntent(open)
                 .setAutoCancel(true)
                 .build()
-            if (runCatching { manager.notify(item.id, notification) }.isSuccess) {
-                newestPosted = maxOf(newestPosted, item.id)
-            }
+            if (runCatching { manager.notify(item.id, notification) }.isSuccess) posted += item.id
         }
-        // Only advance past what was actually surfaced; the rest is retried next run.
-        prefs.lastSeenNotificationId = newestPosted
+        // Only advance past what was actually surfaced; the rest of the batch is retried
+        // next run, oldest first.
+        prefs.lastSeenNotificationId = Notifications.advancedCursor(
+            pendingIds = pending.map { it.id },
+            postedIds = posted,
+            previous = prefs.lastSeenNotificationId,
+        )
     }
 }
