@@ -87,7 +87,9 @@ class Prefs(context: Context) {
             .split(',')
             .map { it.trim() }
             .filter { it.isNotEmpty() }
-        set(value) = store.edit().putString(KEY_TRACKED, value.joinToString(",")).apply()
+        // Only [updateTracked] writes the list: shared prefs has no compare-and-set,
+        // so a bare assignment races any other read-modify-write (see the lock there).
+        private set(value) = store.edit().putString(KEY_TRACKED, value.joinToString(",")).apply()
 
     var basketRaw: String
         get() = store.getString(KEY_BASKET, "") ?: ""
@@ -123,15 +125,39 @@ class Prefs(context: Context) {
         get() = store.getInt(KEY_LAST_NOTIFICATION, 0)
         set(value) = store.edit().putInt(KEY_LAST_NOTIFICATION, value).apply()
 
+    /**
+     * Guards the read-modify-write of [trackedSlugs].
+     *
+     * Following a drink (UI) and pruning one the server no longer lists (worker) can
+     * land at the same moment; both read the list, change it and write it back, so the
+     * slower write silently discarded whatever the other had just added. One lock
+     * shared by every mutation closes that window — the app runs the worker in the
+     * same process, so a monitor is enough and the preference store needs no schema.
+     */
+    private val trackedLock = Any()
+
+    /**
+     * Replace the tracked list atomically, letting [change] see the current value.
+     *
+     * The list is the user's only personal state, so a change that leaves it
+     * identical still skips the write rather than rewriting the same string.
+     */
+    fun updateTracked(change: (List<String>) -> List<String>) {
+        synchronized(trackedLock) {
+            val current = trackedSlugs
+            val next = change(current)
+            if (next != current) trackedSlugs = next
+        }
+    }
+
     fun addTracked(slug: String) {
         if (slug.isBlank()) return
-        val current = trackedSlugs
-        if (slug !in current) trackedSlugs = current + slug
+        updateTracked { current -> if (slug in current) current else current + slug }
         trackedNote = null
     }
 
     fun removeTracked(slug: String) {
-        trackedSlugs = trackedSlugs.filterNot { it == slug }
+        updateTracked { current -> current.filterNot { it == slug } }
         trackedNote = null
     }
 
