@@ -1,5 +1,6 @@
 package com.drinkwatch.app.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -19,21 +21,25 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -43,9 +49,11 @@ import androidx.core.content.FileProvider
 import com.drinkwatch.app.data.Api
 import com.drinkwatch.app.data.Images
 import com.drinkwatch.app.data.Ocr
+import com.drinkwatch.app.data.PhotoClass
 import com.drinkwatch.app.data.Prefs
 import com.drinkwatch.app.data.Price
 import com.drinkwatch.app.data.Product
+import com.drinkwatch.app.data.ReceiptCandidate
 import com.drinkwatch.app.data.ServiceLocator
 import com.drinkwatch.app.data.Store
 import com.drinkwatch.app.ui.components.ErrorBar
@@ -56,13 +64,31 @@ import com.drinkwatch.app.ui.components.QuickPriceDialog
 import com.drinkwatch.app.ui.components.SectionCard
 import com.drinkwatch.app.ui.components.StorePickerDialog
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-private enum class AddMode(val label: String) {
-    Barcode("Barcode"),
-    Tag("Price tag"),
-    Receipt("Receipt"),
-    Manual("Type it in"),
+/**
+ * Three ways to add a price, each chosen explicitly before any form appears.
+ *
+ * The screen deliberately opens on the choice rather than a default mode: the
+ * form below it used to be a long scroll away from whichever chip was selected,
+ * so the field that needed attention could end up off-screen.
+ */
+private enum class Method(val title: String, val blurb: String) {
+    Barcode(
+        "Scan a barcode",
+        "Point the camera at the barcode on the can. The digits can be entered by hand if the scanner will not focus.",
+    ),
+    Photo(
+        "Price tag or receipt",
+        "A price tag adds one drink. A receipt adds every drink on the docket at once. The type is detected from the photo.",
+    ),
+    Manual(
+        "Type it in",
+        "Search the catalogue for the drink, then record the price and the store.",
+    ),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -73,128 +99,130 @@ fun AddScreen() {
     val api = remember { ServiceLocator.api(context) }
     val scope = rememberCoroutineScope()
 
-    var mode by remember { mutableStateOf(AddMode.Barcode) }
+    var method by remember { mutableStateOf<Method?>(null) }
     var product by remember { mutableStateOf<Product?>(null) }
+    var store by remember { mutableStateOf<Store?>(null) }
+    var priceText by remember { mutableStateOf("") }
+    var promo by remember { mutableStateOf("none") }
+    var note by remember { mutableStateOf("") }
+    var barcodeText by remember { mutableStateOf("") }
+    var searchQuery by remember { mutableStateOf("") }
+    var searchResults by remember { mutableStateOf<List<Product>>(emptyList()) }
+    var photoKind by remember { mutableStateOf<PhotoClass.Kind?>(null) }
+    var receiptText by remember { mutableStateOf<String?>(null) }
+    var receiptCandidates by remember { mutableStateOf<List<ReceiptCandidate>>(emptyList()) }
+    var receiptSelected by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    var photoBytes by remember { mutableStateOf<ByteArray?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var productPicker by remember { mutableStateOf(false) }
+    var storePicker by remember { mutableStateOf(false) }
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     var quickProduct by remember { mutableStateOf<Product?>(null) }
     var quickBarcode by remember { mutableStateOf<String?>(null) }
-    var barcodeText by remember { mutableStateOf("") }
-    var priceText by remember { mutableStateOf("") }
-    var store by remember { mutableStateOf<Store?>(null) }
-    var promo by remember { mutableStateOf("none") }
-    var note by remember { mutableStateOf("") }
-    var photoBytes by remember { mutableStateOf<ByteArray?>(null) }
-    var ocrText by remember { mutableStateOf<String?>(null) }
-    var status by remember { mutableStateOf<String?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var busy by remember { mutableStateOf(false) }
-    var productPicker by remember { mutableStateOf(false) }
-    var storePicker by remember { mutableStateOf(false) }
-    var pendingDialog by remember { mutableStateOf(false) }
-    // What the last scan resolved to, so scanning a second can of the same drink
-    // lands the user straight in the price form instead of appearing to do nothing.
-    var knownBarcode by remember { mutableStateOf<String?>(null) }
-    var receiptCandidates by remember { mutableStateOf<List<com.drinkwatch.app.data.ReceiptCandidate>>(emptyList()) }
-    var receiptSelected by remember { mutableStateOf<Set<Int>>(emptySet()) }
-    var receiptStore by remember { mutableStateOf<Store?>(null) }
-    var receiptBusy by remember { mutableStateOf(false) }
-    var suggestionName by remember { mutableStateOf<String?>(null) }
-    var suggestionBrand by remember { mutableStateOf<String?>(null) }
+    var pendingFile by remember { mutableStateOf<java.io.File?>(null) }
+    var knownCode by remember { mutableStateOf<String?>(null) }
+
+    fun tell(message: String) {
+        android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    /** Back to the method chooser, with the per-attempt state cleared. */
+    fun reset() {
+        method = null
+        product = null
+        priceText = ""
+        promo = "none"
+        note = ""
+        barcodeText = ""
+        searchQuery = ""
+        searchResults = emptyList()
+        photoBytes = null
+        photoKind = null
+        receiptText = null
+        receiptCandidates = emptyList()
+        receiptSelected = emptySet()
+        knownCode = null
+        error = null
+    }
+
+    fun fail(message: String?) {
+        error = message ?: "Something went wrong"
+        tell(error!!)
+    }
 
     fun lookup(code: String) {
         if (code.isBlank()) return
         scope.launch {
             busy = true
             error = null
-            status = null
             runCatching { api.barcode(code) }
                 .onSuccess { hit ->
+                    knownCode = code
                     val found = hit.product
                     if (found != null) {
-                        // Known can: this is the common case on a second scan, and it
-                        // must ask for price + store with the identity already filled.
                         product = found
-                        unknownBarcode = null
-                        knownBarcode = hit.barcode
-                        barcodeText = hit.barcode
-                        priceText = ""
-                        note = ""
-                        promo = "none"
-                        photoBytes = null
-                        ocrText = null
-                        status = null
-                        // Ask for the price in a popup: the inline form is a long way
-                        // down the screen, which is why a repeat scan looked inert.
-                        quickProduct = found
-                        quickBarcode = hit.barcode
+                        // The drink is known, so the only question left is the store.
+                        if (store == null) storePicker = true
                     } else {
                         unknownBarcode = code
-                        suggestionName = hit.suggestedName
-                        suggestionBrand = hit.suggestedBrand
-                        pendingDialog = true
                     }
                 }
                 .onFailure { failure ->
                     // No signal in the servo car park: the cached catalogue still
                     // knows the can, so say so instead of failing blankly.
-                    val cached = com.drinkwatch.app.data.OfflineCatalogue(context)
-                        .offlineLabel(code)
-                    error = if (cached != null) {
-                        "Offline: that is $cached. Reconnect to add the price."
+                    val cached = com.drinkwatch.app.data.OfflineCatalogue(context).offlineLabel(code)
+                    if (cached != null) {
+                        fail("Offline: that is $cached. Reconnect to record the price.")
                     } else {
-                        failure.message
+                        fail(failure.message)
                     }
                 }
             busy = false
         }
     }
 
-    val scanner = remember { GmsBarcodeScanning.getClient(context) }
     fun startScan() {
-        error = null
+        val scanner = GmsBarcodeScanning.getClient(context)
         scanner.startScan()
-            .addOnSuccessListener { barcode -> barcode.rawValue?.let { lookup(it) } }
-            .addOnFailureListener { error = "Scanner unavailable: " + (it.message ?: "try typing the barcode") }
+            .addOnSuccessListener { barcode -> lookup(barcode.rawValue.orEmpty()) }
+            .addOnFailureListener { failure -> fail(failure.message) }
     }
 
-    var pendingFile by remember { mutableStateOf<java.io.File?>(null) }
     fun reportPhotoProblem(message: String) {
         error = message
-        // The inline error sits below a long scrolling form, so it is easy to miss
-        // exactly when nothing else happens on screen.
-        android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
+        tell(message)
     }
 
+    /** One entry point for camera and gallery: the text decides tag or receipt. */
     fun processPhoto(file: java.io.File) {
-        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        scope.launch(Dispatchers.IO) {
             val bitmap = Images.load(file)
             if (bitmap == null) {
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    reportPhotoProblem("Could not read that photo")
-                }
+                withContext(Dispatchers.Main) { reportPhotoProblem("Could not read that photo") }
                 return@launch
             }
             val jpeg = Images.toJpeg(bitmap)
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { photoBytes = jpeg }
+            withContext(Dispatchers.Main) { photoBytes = jpeg }
             Ocr.readTag(bitmap) { cents, text ->
-                scope.launch(kotlinx.coroutines.Dispatchers.Main) {
-                    ocrText = text.take(200)
-                    // A tag photo names the drink too: match the words against the
-                    // catalogue and preselect it, so the picker is one tap away.
-                    if (text.isNotBlank()) {
-                        val words = text.lowercase()
-                        runCatching { api.searchProducts(text.take(60), 8) }
-                            .getOrDefault(emptyList())
-                            .firstOrNull { candidate ->
-                                words.contains(candidate.brand.lowercase()) &&
-                                    (candidate.sizeMl == null || words.contains(candidate.sizeMl.toString()))
+                scope.launch(Dispatchers.Main) {
+                    receiptText = text
+                    val kind = PhotoClass.classify(text)
+                    photoKind = kind
+                    when (kind) {
+                        PhotoClass.Kind.Tag -> {
+                            if (cents != null) {
+                                priceText = String.format(java.util.Locale.US, "%.2f", cents / 100.0)
                             }
-                            ?.let { product = it }
-                    }
-                    when {
-                        cents != null -> priceText = String.format(java.util.Locale.US, "%.2f", cents / 100.0)
-                        text.isBlank() -> reportPhotoProblem("Couldn't read that tag — type the price instead")
-                        else -> reportPhotoProblem("Saw text but no price — type it in")
+                            prefillFromTag(api, text) { matched -> product = product ?: matched }
+                            if (cents == null && text.isBlank()) {
+                                reportPhotoProblem("Could not read that tag. Type the price instead.")
+                            }
+                        }
+                        PhotoClass.Kind.Receipt -> {
+                            if (store == null) storePicker = true
+                        }
+                        PhotoClass.Kind.Unknown -> Unit
                     }
                 }
             }
@@ -213,16 +241,14 @@ fun AddScreen() {
         // Copy and decode in the same coroutine: launching the copy and decoding
         // straight away raced it, and the decoder saw an empty file, so picking an
         // image from the gallery appeared to do nothing at all.
-        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        scope.launch(Dispatchers.IO) {
             val copied = runCatching {
                 context.contentResolver.openInputStream(uri)?.use { source ->
                     file.outputStream().use { target -> source.copyTo(target) }
                 } != null
             }.getOrDefault(false)
             if (!copied) {
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    reportPhotoProblem("Could not read that image")
-                }
+                withContext(Dispatchers.Main) { reportPhotoProblem("Could not read that image") }
                 return@launch
             }
             processPhoto(file)
@@ -240,17 +266,10 @@ fun AddScreen() {
         val cents = Price.parseToCents(priceText)
         val chosenStore = store
         val chosenProduct = product
-        if (cents == null) {
-            error = "Enter the price you saw"
-            return
-        }
-        if (chosenStore == null) {
-            error = "Pick the store you are in"
-            return
-        }
-        if (chosenProduct == null) {
-            error = "Pick which drink it was"
-            return
+        when {
+            chosenProduct == null -> return fail("Choose the drink first")
+            cents == null -> return fail("Enter the price you saw")
+            chosenStore == null -> return fail("Choose the store you are in")
         }
         scope.launch {
             busy = true
@@ -259,299 +278,261 @@ fun AddScreen() {
                 api.ensureDevice()
                 val photoToken = photoBytes?.let { api.uploadPhoto(it) }
                 api.submitObservation(
-                    storeId = chosenStore.id,
-                    productSlug = chosenProduct.slug,
-                    priceCents = cents,
+                    storeId = chosenStore!!.id,
+                    productSlug = chosenProduct!!.slug,
+                    priceCents = cents!!,
                     promoKind = promo,
                     note = note.ifBlank { null },
                     photoToken = photoToken,
                 )
             }.onSuccess { response ->
-                status = if (response.optString("status") == "needs_review") {
-                    "Saved, but flagged for review (far from the usual price)."
-                } else {
-                    "Thanks! " + chosenProduct.label() + " at " + chosenStore.name + " recorded."
-                }
-                priceText = ""
-                note = ""
-                promo = "none"
-                photoBytes = null
-                ocrText = null
-            }.onFailure { error = it.message }
+                tell(
+                    if (response.optString("status") == "needs_review") {
+                        "Saved and flagged for review (far from the usual price)"
+                    } else {
+                        "Recorded ${chosenProduct!!.label()} at ${chosenStore!!.name}"
+                    }
+                )
+                reset()
+            }.onFailure { fail(it.message) }
             busy = false
         }
     }
 
-    Scaffold(
-        topBar = { TopAppBar(title = { Text("Add a price", fontWeight = FontWeight.SemiBold) }) },
-    ) { padding ->
-        Column(
-            Modifier
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+    fun submitReceipt() {
+        val chosenStore = store ?: return fail("Choose the store this receipt is from")
+        val items = receiptCandidates.mapIndexedNotNull { index, candidate ->
+            if (index !in receiptSelected) return@mapIndexedNotNull null
+            val slug = candidate.productSlug ?: return@mapIndexedNotNull null
+            val cents = candidate.priceCents ?: return@mapIndexedNotNull null
+            Triple(chosenStore.id, slug, cents)
+        }
+        if (items.isEmpty()) return fail("Tick at least one line")
+        scope.launch {
+            busy = true
+            error = null
+            runCatching { api.ensureDevice(); api.submitBatch(items) }
+                .onSuccess {
+                    tell("Added ${items.size} prices from the receipt")
+                    reset()
+                }
+                .onFailure { fail(it.message) }
+            busy = false
+        }
+    }
+
+    // A receipt needs a store before the lines mean anything, so parse as soon as
+    // one is chosen instead of making the user hunt for another button.
+    LaunchedEffect(method, photoKind, receiptText, store) {
+        val text = receiptText
+        if (method == Method.Photo &&
+            photoKind == PhotoClass.Kind.Receipt &&
+            text != null &&
+            store != null &&
+            receiptCandidates.isEmpty() &&
+            !busy
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AddMode.entries.forEach { candidate ->
-                    FilterChip(
-                        selected = mode == candidate,
-                        onClick = { mode = candidate },
-                        label = { Text(candidate.label) },
+            busy = true
+            runCatching { api.ensureDevice(); api.parseReceipt(text) }
+                .onSuccess { candidates ->
+                    receiptCandidates = candidates.filter { it.priceCents != null }
+                    receiptSelected = receiptCandidates
+                        .mapIndexedNotNull { index, candidate -> if (candidate.productSlug != null) index else null }
+                        .toSet()
+                    if (receiptCandidates.isEmpty()) {
+                        fail("No drinks matched on that receipt. Use the price tag option per can.")
+                    }
+                }
+                .onFailure { fail(it.message) }
+            busy = false
+        }
+    }
+
+    // Inline catalogue search for the manual option: results appear on the screen
+    // instead of behind a dialog, so the first match is visible without a tap.
+    LaunchedEffect(searchQuery) {
+        val query = searchQuery.trim()
+        if (query.length < 2) {
+            searchResults = emptyList()
+            return@LaunchedEffect
+        }
+        delay(300)
+        searchResults = runCatching { api.searchProducts(query, 8) }.getOrDefault(emptyList())
+    }
+
+    BackHandler(enabled = method != null) { reset() }
+
+    val canSave = product != null && Price.parseToCents(priceText) != null && store != null && !busy
+    val action: BottomAction? = when (method) {
+        null -> null
+        Method.Barcode -> if (product == null) {
+            BottomAction(if (busy) "Looking up…" else "Scan barcode", !busy) { startScan() }
+        } else {
+            BottomAction(if (busy) "Saving…" else "Save this price", canSave) { submit() }
+        }
+        Method.Manual -> BottomAction(if (busy) "Saving…" else "Save this price", canSave) { submit() }
+        Method.Photo -> when {
+            photoKind == PhotoClass.Kind.Receipt -> BottomAction(
+                if (busy) "Adding…" else "Add ${receiptSelected.size} prices",
+                receiptSelected.isNotEmpty() && store != null && !busy,
+            ) { submitReceipt() }
+            photoKind == null -> null
+            else -> BottomAction(if (busy) "Saving…" else "Save this price", canSave) { submit() }
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text(
+                        when (method) {
+                            null -> "Add a price"
+                            Method.Barcode -> "Scan a barcode"
+                            Method.Photo -> "Price tag or receipt"
+                            Method.Manual -> "Type it in"
+                        },
+                        fontWeight = FontWeight.SemiBold,
                     )
+                },
+                navigationIcon = {
+                    if (method != null) {
+                        TextButton(onClick = { reset() }) { Text("Back") }
+                    }
+                },
+            )
+        },
+        bottomBar = {
+            action?.let { chosen ->
+                Surface(tonalElevation = 3.dp) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                        PrimaryButton(chosen.label, chosen.enabled, chosen.onClick)
+                    }
                 }
             }
-
-            when (mode) {
-                AddMode.Barcode -> SectionCard(title = "Scan the can") {
-                    Text(
-                        "Point the camera at the barcode on the can.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    PrimaryButton(if (busy) "Looking up…" else "Scan barcode", enabled = !busy) { startScan() }
-                    Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                        OutlinedTextField(
-                            value = barcodeText,
-                            onValueChange = { barcodeText = it.filter { ch -> ch.isDigit() } },
-                            label = { Text("Or type the digits") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f),
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        TextButton(onClick = { lookup(barcodeText) }, enabled = barcodeText.length >= 8) { Text("Look up") }
-                    }
+        },
+    ) { padding ->
+        Column(Modifier.padding(padding).fillMaxSize()) {
+            // Errors sit directly under the header, above everything else, so they
+            // are read where the eye already is rather than at the end of a scroll.
+            if (error != null) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                    ErrorBar(error) { error = null; if (method == Method.Barcode) startScan() }
                 }
-
-                AddMode.Tag -> SectionCard(title = "Price tag") {
-                    Text(
-                        "Photograph the shelf tag or the fridge label. We read the price for you.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    PrimaryButton("Take photo") { shoot() }
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedButton(
-                        onClick = { pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                    ) { Text("Choose from gallery") }
-                    ocrText?.let {
-                        Spacer(Modifier.height(8.dp))
-                        Text("Read from the tag:", style = MaterialTheme.typography.labelSmall)
-                        Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-
-                AddMode.Receipt -> SectionCard(title = "Receipt") {
-                    Text(
-                        "Photograph a docket and add every can on it at once. Match the lines, pick the store, submit.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    PrimaryButton("Take photo") { shoot() }
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedButton(
-                        onClick = { pickImage.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                    ) { Text("Choose from gallery") }
-
-                    ocrText?.let { text ->
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "Read " + text.lines().count { it.isNotBlank() } + " lines",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        OutlinedButton(onClick = { receiptStore = null; storePicker = true }, modifier = Modifier.fillMaxWidth()) {
-                            Text(receiptStore?.name ?: "Which store is this from?")
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        PrimaryButton(
-                            if (receiptBusy) "Matching…" else "Match lines",
-                            enabled = !receiptBusy && receiptStore != null,
-                        ) {
-                            scope.launch {
-                                receiptBusy = true
-                                error = null
-                                runCatching {
-                                    api.ensureDevice()
-                                    api.parseReceipt(text)
-                                }.onSuccess { candidates ->
-                                    receiptCandidates = candidates.filter { it.priceCents != null }
-                                    receiptSelected = receiptCandidates
-                                        .mapIndexedNotNull { index, candidate ->
-                                            if (candidate.productSlug != null) index else null
-                                        }
-                                        .toSet()
-                                }.onFailure { error = it.message }
-                                receiptBusy = false
-                            }
-                        }
-                    }
-
-                    if (receiptCandidates.isNotEmpty()) {
-                        Spacer(Modifier.height(10.dp))
-                        Text(
-                            receiptSelected.size.toString() + " of " + receiptCandidates.size + " matched",
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                        receiptCandidates.forEachIndexed { index, candidate ->
-                            val checked = index in receiptSelected
-                            val matched = candidate.productSlug != null
-                            Row(
-                                Modifier.fillMaxWidth().clickable(enabled = matched) {
-                                    receiptSelected = if (checked) receiptSelected - index else receiptSelected + index
-                                }.padding(vertical = 4.dp),
-                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                            ) {
-                                androidx.compose.material3.Checkbox(
-                                    checked = checked,
-                                    enabled = matched,
-                                    onCheckedChange = { on ->
-                                        receiptSelected = if (on == true) receiptSelected + index else receiptSelected - index
-                                    },
-                                )
-                                Column(Modifier.weight(1f)) {
-                                    Text(
-                                        candidate.label ?: candidate.line.take(40),
-                                        style = MaterialTheme.typography.bodySmall,
-                                    )
-                                    Text(
-                                        candidate.line.take(48),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                Text(Price.aud(candidate.priceCents), style = MaterialTheme.typography.bodySmall)
-                            }
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        PrimaryButton(
-                            if (receiptBusy) "Saving…" else "Add " + receiptSelected.size + " prices",
-                            enabled = !receiptBusy && receiptSelected.isNotEmpty() && receiptStore != null,
-                        ) {
-                            val storeId = receiptStore?.id ?: return@PrimaryButton
-                            val items = receiptCandidates.mapIndexedNotNull { index, candidate ->
-                                if (index !in receiptSelected) return@mapIndexedNotNull null
-                                val slug = candidate.productSlug ?: return@mapIndexedNotNull null
-                                val cents = candidate.priceCents ?: return@mapIndexedNotNull null
-                                Triple(storeId, slug, cents)
-                            }
-                            scope.launch {
-                                receiptBusy = true
-                                runCatching { api.submitBatch(items) }
-                                    .onSuccess { response ->
-                                        val saved = (0 until response.optJSONArray("results").let { it?.length() ?: 0 })
-                                            .count { index ->
-                                                response.optJSONArray("results")
-                                                    ?.optJSONObject(index)?.optString("status") == "accepted"
-                                            }
-                                        status = "Added " + receiptSelected.size + " prices from the receipt"
-                                        receiptCandidates = emptyList()
-                                        receiptSelected = emptySet()
-                                        android.widget.Toast.makeText(
-                                            context,
-                                            "Added " + receiptSelected.size + " prices",
-                                            android.widget.Toast.LENGTH_SHORT,
-                                        ).show()
-                                    }
-                                    .onFailure { error = it.message }
-                                receiptBusy = false
-                            }
-                        }
-                    }
-                }
-
-                AddMode.Manual -> Spacer(Modifier.height(0.dp))
             }
+            Column(
+                Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                when (method) {
+                    null -> ChooserCard { picked -> method = picked; error = null }
 
-            knownBarcode?.let { code ->
-                Text(
-                    "Barcode " + code,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            SectionCard(title = "What did you find?") {
-                if (product != null) {
-                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                        Text(product!!.label(), modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                        TextButton(onClick = { productPicker = true }) { Text("Change") }
+                    Method.Barcode -> BarcodePane(
+                        knownCode = knownCode,
+                        product = product,
+                        busy = busy,
+                        barcodeText = barcodeText,
+                        onBarcodeText = { barcodeText = it.filter { ch -> ch.isDigit() }.take(14) },
+                        onLookup = { lookup(barcodeText) },
+                        onChangeDrink = { productPicker = true },
+                    ) {
+                        PriceForm(
+                            product = product,
+                            store = store,
+                            priceText = priceText,
+                            promo = promo,
+                            note = note,
+                            onPrice = { priceText = it },
+                            onPromo = { promo = it },
+                            onNote = { note = it },
+                            onPickDrink = { productPicker = true },
+                            onPickStore = { storePicker = true },
+                        )
                     }
-                } else {
-                    OutlinedButton(
-                        onClick = { productPicker = true },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                    ) { Text("Choose drink") }
-                }
-                Spacer(Modifier.height(10.dp))
-                MoneyField(priceText, { priceText = it }, "Price on the tag")
-                Spacer(Modifier.height(10.dp))
-                if (store != null) {
-                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(store!!.name, style = MaterialTheme.typography.bodyMedium)
-                            Text(
-                                listOfNotNull(store!!.chainName, store!!.suburb, store!!.distanceKm?.let { Price.km(it) })
-                                    .joinToString(" · "),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+
+                    Method.Photo -> PhotoPane(
+                        kind = photoKind,
+                        receiptText = receiptText,
+                        priceText = priceText,
+                        product = product,
+                        busy = busy,
+                        candidates = receiptCandidates,
+                        selected = receiptSelected,
+                        storeName = store?.let { it.name },
+                        onShoot = { shoot() },
+                        onGallery = {
+                            pickImage.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                             )
-                        }
-                        TextButton(onClick = { storePicker = true }) { Text("Change") }
+                        },
+                        onOverride = { kind ->
+                            photoKind = kind
+                            receiptCandidates = emptyList()
+                            receiptSelected = emptySet()
+                        },
+                        onToggle = { index, on ->
+                            receiptSelected = if (on) receiptSelected + index else receiptSelected - index
+                        },
+                        onPickStore = { storePicker = true },
+                    ) {
+                        PriceForm(
+                            product = product,
+                            store = store,
+                            priceText = priceText,
+                            promo = promo,
+                            note = note,
+                            onPrice = { priceText = it },
+                            onPromo = { promo = it },
+                            onNote = { note = it },
+                            onPickDrink = { productPicker = true },
+                            onPickStore = { storePicker = true },
+                        )
                     }
-                } else {
-                    OutlinedButton(
-                        onClick = { storePicker = true },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                    ) { Text("Which store are you in?") }
-                }
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("none" to "Normal price", "special" to "Special", "clearance" to "Clearance").forEach { (key, label) ->
-                        FilterChip(selected = promo == key, onClick = { promo = key }, label = { Text(label) })
-                    }
-                }
-                Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = note,
-                    onValueChange = { note = it.take(300) },
-                    label = { Text("Note (optional)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(12.dp))
-                PrimaryButton(if (busy) "Saving…" else "Submit price", enabled = !busy) { submit() }
-            }
 
-            status?.let {
-                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
-                    Text(it, Modifier.padding(14.dp), style = MaterialTheme.typography.bodySmall)
+                    Method.Manual -> ManualPane(
+                        query = searchQuery,
+                        results = searchResults,
+                        product = product,
+                        onQuery = {
+                            searchQuery = it
+                            if (it.isBlank()) product = null
+                        },
+                        onPick = { picked ->
+                            product = picked
+                            searchResults = emptyList()
+                            searchQuery = ""
+                        },
+                        onChangeDrink = { productPicker = true },
+                    ) {
+                        PriceForm(
+                            product = product,
+                            store = store,
+                            priceText = priceText,
+                            promo = promo,
+                            note = note,
+                            onPrice = { priceText = it },
+                            onPromo = { promo = it },
+                            onNote = { note = it },
+                            onPickDrink = { productPicker = true },
+                            onPickStore = { storePicker = true },
+                        )
+                    }
                 }
             }
-            ErrorBar(error)
-            Spacer(Modifier.height(70.dp))
         }
     }
 
     if (productPicker) {
         ProductPickerDialog(
-            title = "Which drink?",
+            initialQuery = searchQuery.ifBlank { product?.name.orEmpty() },
             onDismiss = { productPicker = false },
             onPick = {
                 product = it
                 productPicker = false
+                if (store == null) storePicker = true
             },
         )
     }
@@ -561,7 +542,6 @@ fun AddScreen() {
             onDismiss = { storePicker = false },
             onPick = {
                 store = it
-                if (mode == AddMode.Receipt) receiptStore = it
                 storePicker = false
             },
         )
@@ -575,33 +555,369 @@ fun AddScreen() {
             onDismiss = { quickProduct = null },
             onSaved = { message ->
                 quickProduct = null
-                status = null
-                // Toast, not a line at the bottom of a long scrolling screen: the
-                // confirmation has to be visible where the tap happened.
-                android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
+                tell(message)
             },
         )
     }
-
-    if (pendingDialog && unknownBarcode != null) {
+    unknownBarcode?.let { code ->
         NewProductDialog(
-            barcode = unknownBarcode!!,
-            suggestedName = suggestionName,
-            suggestedBrand = suggestionBrand,
+            barcode = code,
+            suggestedName = null,
+            suggestedBrand = null,
             api = api,
             prefs = prefs,
-            onDismiss = { pendingDialog = false },
-            onDone = { added, message ->
-                pendingDialog = false
+            onDismiss = { unknownBarcode = null },
+            onDone = { added, _ ->
+                unknownBarcode = null
                 product = added
-                knownBarcode = unknownBarcode
-                status = null
-                android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
                 quickProduct = added
-                quickBarcode = unknownBarcode
+                quickBarcode = code
             },
         )
     }
+}
+
+private data class BottomAction(val label: String, val enabled: Boolean, val onClick: () -> Unit)
+
+/** The landing state: three equal, unmistakable choices. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChooserCard(onPick: (Method) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(
+            "How would you like to add it?",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Method.entries.forEach { option ->
+            Card(
+                onClick = { onPick(option) },
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(option.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            option.blurb,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Text("›", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BarcodePane(
+    knownCode: String?,
+    product: Product?,
+    busy: Boolean,
+    barcodeText: String,
+    onBarcodeText: (String) -> Unit,
+    onLookup: () -> Unit,
+    onChangeDrink: () -> Unit,
+    form: @Composable () -> Unit,
+) {
+    if (product == null) {
+        SectionCard(title = "Scan the can") {
+            Text(
+                "The camera reads the barcode and finds the drink. Nothing is saved until the price is confirmed.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        SectionCard(title = "The scanner will not focus?") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = barcodeText,
+                    onValueChange = onBarcodeText,
+                    label = { Text("Barcode digits") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(8.dp))
+                TextButton(onClick = onLookup, enabled = barcodeText.length >= 8 && !busy) { Text("Look up") }
+            }
+        }
+    } else {
+        knownCode?.let {
+            Text(
+                "Barcode $it",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                product.label(),
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onChangeDrink) { Text("Change") }
+        }
+        form()
+    }
+}
+
+@Composable
+private fun PhotoPane(
+    kind: PhotoClass.Kind?,
+    receiptText: String?,
+    priceText: String,
+    product: Product?,
+    busy: Boolean,
+    candidates: List<ReceiptCandidate>,
+    selected: Set<Int>,
+    storeName: String?,
+    onShoot: () -> Unit,
+    onGallery: () -> Unit,
+    onOverride: (PhotoClass.Kind) -> Unit,
+    onToggle: (Int, Boolean) -> Unit,
+    onPickStore: () -> Unit,
+    form: @Composable () -> Unit,
+) {
+    if (kind == null) {
+        SectionCard(title = "Photograph the tag or the docket") {
+            Text(
+                "A price tag adds one drink. A receipt adds every drink on it. The photo decides which, and the result is shown before anything is saved.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            PrimaryButton(if (busy) "Reading…" else "Take photo", !busy) { onShoot() }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = onGallery,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+            ) { Text("Choose from gallery") }
+        }
+        return
+    }
+
+    val lines = receiptText?.lines()?.count { it.isNotBlank() } ?: 0
+    val (headline, overrideLabel, overrideTo) = when (kind) {
+        PhotoClass.Kind.Receipt -> Triple("Receipt detected · $lines lines", "This is a price tag", PhotoClass.Kind.Tag)
+        PhotoClass.Kind.Tag -> Triple("Price tag detected", "This is a receipt", PhotoClass.Kind.Receipt)
+        PhotoClass.Kind.Unknown -> Triple("Could not tell what this is", "", PhotoClass.Kind.Tag)
+    }
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                headline,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f),
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            when (kind) {
+                PhotoClass.Kind.Unknown -> Row {
+                    TextButton(onClick = { onOverride(PhotoClass.Kind.Tag) }) { Text("Price tag") }
+                    TextButton(onClick = { onOverride(PhotoClass.Kind.Receipt) }) { Text("Receipt") }
+                }
+                else -> TextButton(onClick = { onOverride(overrideTo) }) { Text(overrideLabel) }
+            }
+        }
+    }
+
+    if (kind == PhotoClass.Kind.Receipt) {
+        SectionCard(title = "Which store is this receipt from?") {
+            OutlinedButton(
+                onClick = onPickStore,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+            ) { Text(storeName ?: "Choose store") }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "All lines on the receipt are recorded at this store.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (busy) {
+            Text("Matching the lines…", style = MaterialTheme.typography.bodySmall)
+        }
+        if (candidates.isNotEmpty()) {
+            SectionCard(title = "${selected.size} of ${candidates.size} lines matched") {
+                candidates.forEachIndexed { index, candidate ->
+                    val matched = candidate.productSlug != null
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = matched) { onToggle(index, index !in selected) }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(
+                            checked = index in selected,
+                            enabled = matched,
+                            onCheckedChange = { on -> onToggle(index, on) },
+                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                candidate.label ?: "No catalogue match",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (matched) {
+                                    MaterialTheme.colorScheme.onSurface
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )
+                            Text(
+                                candidate.line.take(44),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(Price.aud(candidate.priceCents), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+        return
+    }
+
+    // Price tag (or an override to one): one drink, one price.
+    if (kind == PhotoClass.Kind.Tag && product == null && priceText.isNotBlank()) {
+        Text(
+            "Price read from the photo: ${Price.aud(Price.parseToCents(priceText))}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    form()
+}
+
+@Composable
+private fun ManualPane(
+    query: String,
+    results: List<Product>,
+    product: Product?,
+    onQuery: (String) -> Unit,
+    onPick: (Product) -> Unit,
+    onChangeDrink: () -> Unit,
+    form: @Composable () -> Unit,
+) {
+    if (product != null) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(product.label(), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            TextButton(onClick = onChangeDrink) { Text("Change") }
+        }
+        form()
+        return
+    }
+    SectionCard(title = "Which drink?") {
+        OutlinedTextField(
+            value = query,
+            onValueChange = onQuery,
+            label = { Text("Search the catalogue") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (results.isEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                if (query.length < 2) "Type at least two letters, or browse the full list." else "No match yet.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TextButton(onClick = onChangeDrink) { Text("Browse all drinks") }
+        } else {
+            results.take(6).forEach { candidate ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { onPick(candidate) }
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(candidate.label(), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                    Text("add", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
+    }
+}
+
+/** Price, store and promotion for a single drink, in the order they are known. */
+@Composable
+private fun PriceForm(
+    product: Product?,
+    store: Store?,
+    priceText: String,
+    promo: String,
+    note: String,
+    onPrice: (String) -> Unit,
+    onPromo: (String) -> Unit,
+    onNote: (String) -> Unit,
+    onPickDrink: () -> Unit,
+    onPickStore: () -> Unit,
+) {
+    SectionCard(title = "What did you find?") {
+        if (product == null) {
+            OutlinedButton(
+                onClick = onPickDrink,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+            ) { Text("Choose drink") }
+        }
+        Spacer(Modifier.height(10.dp))
+        MoneyField(priceText, onPrice, "Price on the tag")
+        Spacer(Modifier.height(10.dp))
+        if (store != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(store.name, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        listOfNotNull(store.chainName, store.suburb, store.distanceKm?.let { Price.km(it) })
+                            .joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(onClick = onPickStore) { Text("Change") }
+            }
+        } else {
+            OutlinedButton(
+                onClick = onPickStore,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+            ) { Text("Which store are you in?") }
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("none" to "Normal price", "special" to "Special", "clearance" to "Clearance")
+                .forEach { (key, label) ->
+                    FilterChip(selected = promo == key, onClick = { onPromo(key) }, label = { Text(label) })
+                }
+        }
+        Spacer(Modifier.height(10.dp))
+        OutlinedTextField(
+            value = note,
+            onValueChange = onNote,
+            label = { Text("Note (optional)") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/** The tag usually names the can, so try to preselect it from the label text. */
+private suspend fun prefillFromTag(api: Api, text: String, onMatch: (Product) -> Unit) {
+    if (text.isBlank()) return
+    val words = text.lowercase()
+    val match = runCatching { api.searchProducts(text.take(60), 8) }.getOrDefault(emptyList())
+        .firstOrNull { candidate ->
+            words.contains(candidate.brand.lowercase()) &&
+                (candidate.sizeMl == null || words.contains(candidate.sizeMl.toString()))
+        }
+    if (match != null) onMatch(match)
 }
 
 @Composable
@@ -629,12 +945,12 @@ private fun NewProductDialog(
 
     // Live completion against the catalogue: the fastest way to say "it is this
     // one" without retyping a name we already know.
-    androidx.compose.runtime.LaunchedEffect(name) {
+    LaunchedEffect(name) {
         if (name.trim().length < 2) {
             matches = emptyList()
             return@LaunchedEffect
         }
-        kotlinx.coroutines.delay(300)
+        delay(300)
         matches = runCatching { api.searchProducts(name.trim(), 6) }.getOrDefault(emptyList())
     }
 
@@ -644,7 +960,7 @@ private fun NewProductDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "Barcode " + barcode + " is not in the catalogue yet. Type what is printed on the can and it will be added for review.",
+                    "Barcode $barcode is not in the catalogue yet. Type what is printed on the can and it will be added for review.",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 OutlinedTextField(
@@ -670,7 +986,7 @@ private fun NewProductDialog(
                                 matches = emptyList()
                             }
                             .padding(vertical = 6.dp),
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
                             candidate.label(),
@@ -751,7 +1067,7 @@ private fun NewProductDialog(
                             } else {
                                 onDone(
                                     Product(0, "", brand, name, null, size.toIntOrNull(), 1, null, "energy"),
-                                    "Added " + name + ". What did you pay?",
+                                    "Added $name. What did you pay?",
                                 )
                             }
                         }.onFailure { error = it.message }
