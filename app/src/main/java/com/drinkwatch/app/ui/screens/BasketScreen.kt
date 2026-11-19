@@ -45,6 +45,8 @@ import com.drinkwatch.app.data.Price
 import com.drinkwatch.app.data.RoutePlan
 import com.drinkwatch.app.data.ServiceLocator
 import com.drinkwatch.app.data.cost
+import com.drinkwatch.app.data.driveVerdict
+import com.drinkwatch.app.data.gaps
 import com.drinkwatch.app.data.multiStoreCost
 import com.drinkwatch.app.ui.components.Chip
 import com.drinkwatch.app.ui.components.ChipTone
@@ -176,6 +178,46 @@ fun BasketScreen() {
 
             result?.let { basket ->
                 val best = basket.stores.firstOrNull { it.complete }
+                val gaps = basket.gaps(items)
+                val split = basket.multiStoreCost()
+
+                if (best == null) {
+                    // Every store is incomplete, not just the list empty: without this the
+                    // user saw incomplete stores and no reason why, and no cheapest card.
+                    SectionCard(title = "No store nearby has all of these") {
+                        if (basket.stores.isEmpty()) {
+                            Text(
+                                "Nothing within " + Price.km(basket.radiusKm) + " has the list.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (gaps.nowhere.isNotEmpty()) {
+                            Text(
+                                "No store within " + Price.km(basket.radiusKm) + " stocks " +
+                                    gaps.nowhere.joinToString(", ") + ".",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (gaps.nearestStore != null && gaps.missingFromNearest.isNotEmpty()) {
+                            Text(
+                                "The best attempt, " + gaps.nearestStore + ", is missing " +
+                                    gaps.missingFromNearest.joinToString(", ") + ".",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            if (split == null) "A bigger radius in Settings may find one shop with everything."
+                            else "The split plan below is the cheapest way to buy what the stores have.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+
                 if (best != null) {
                     // The server ranks on items + fuel, so that is the number to headline;
                     // the shelf total alone would look cheaper than the split plan below.
@@ -228,7 +270,7 @@ fun BasketScreen() {
                     }
                 }
 
-                basket.multiStoreCost()?.let { cost ->
+                split?.let { cost ->
                     SectionCard(title = "Split across stores") {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
@@ -260,6 +302,16 @@ fun BasketScreen() {
                         basket.multiStorePlan.forEach { line ->
                             Text(
                                 (line.storeName) + " — " + line.costCents.let { Price.aud(it) },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (gaps.missingFromSplit.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            // Without this the total reads as the whole basket when the plan
+                            // only covers the lines at least one store actually has.
+                            Text(
+                                "Not in the plan: " + gaps.missingFromSplit.joinToString(", ") + ".",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -303,21 +355,40 @@ fun BasketScreen() {
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    plan.netSavingCents?.let { saving ->
+                    // The server's net_saving_cents compares the plan's items + fuel with a
+                    // shelf-only baseline, so a one-stop drive always reads "not worth it".
+                    // Compare shelf against shelf and name the trip's fuel on its own.
+                    plan.driveVerdict()?.let { verdict ->
                         Spacer(Modifier.height(6.dp))
-                        if (saving > 0) Chip("Worth it: saves " + Price.aud(saving), ChipTone.Good)
-                        else Chip("Not worth it: costs " + Price.aud(-saving) + " extra", ChipTone.Warn)
+                        val fuelNote = verdict.fuelCents.takeIf { it > 0 }
+                            ?.let { "; the trip's fuel is " + Price.aud(it) }
+                            .orEmpty()
+                        when {
+                            verdict.isSingleStop -> Chip(
+                                "One stop — no split saving" + fuelNote,
+                                ChipTone.Neutral,
+                            )
+                            verdict.surelyWorthIt -> Chip(
+                                "Worth it: items save " + Price.aud(verdict.itemsSavingCents) + fuelNote,
+                                ChipTone.Good,
+                            )
+                            verdict.itemsSavingCents > 0 -> Chip(
+                                "Shelf items " + Price.aud(verdict.itemsSavingCents) + " cheaper" + fuelNote,
+                                ChipTone.Neutral,
+                            )
+                            verdict.itemsSavingCents < 0 -> Chip(
+                                "Shelf items " + Price.aud(-verdict.itemsSavingCents) + " dearer" + fuelNote,
+                                ChipTone.Warn,
+                            )
+                            else -> Chip(
+                                "Same shelf total as the cheapest single store" + fuelNote,
+                                ChipTone.Neutral,
+                            )
+                        }
                     }
                 }
             }
 
-            if (result != null && result!!.stores.isEmpty()) {
-                Text(
-                    "No store nearby has all of these. Try a bigger radius in Settings.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
             Spacer(Modifier.height(70.dp))
         }
     }
