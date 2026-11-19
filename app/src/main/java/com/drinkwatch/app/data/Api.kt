@@ -47,10 +47,7 @@ class Api(
     private fun execute(request: Request): String = transport.call(request).use { response ->
         val body = response.body?.string() ?: ""
         if (!response.isSuccessful) {
-            val detail = runCatching { JSONObject(body).optString("detail") }.getOrNull()
-                ?.takeIf { it.isNotBlank() && it != "null" }
-                ?: body.take(180).ifBlank { response.message }
-            throw ApiException(detail, response.code)
+            throw ApiException(errorMessage(body, response.message), response.code)
         }
         body
     }
@@ -499,6 +496,32 @@ class Api(
             Log.w(TAG, where + " failed: " + throwable.message)
         }
     }
+}
+
+// -------------------------------------------------------------------- errors
+
+/**
+ * Human-readable message from an unsuccessful response body.
+ *
+ * FastAPI reports validation failures with `detail` as an *array* of error
+ * objects. Reading that with optString() returned the array's toString(), so a
+ * 422 from /v1/basket/compare showed ~1000 characters of echoed request JSON
+ * instead of the sentence that explains the problem; the per-error `msg` fields
+ * are that sentence. A plain string detail still wins (the 404 stale-slug recovery
+ * reads it), and anything else falls back to the raw body as before.
+ */
+internal fun errorMessage(body: String, fallback: String = ""): String {
+    val detail = runCatching { JSONObject(body).opt("detail") }.getOrNull()
+    val message = when (detail) {
+        is JSONArray -> (0 until detail.length())
+            .mapNotNull { (detail.opt(it) as? JSONObject)?.optString("msg")?.trim()?.takeIf(String::isNotBlank) }
+            .distinct()
+            .joinToString("; ")
+        is String -> detail.trim()
+        else -> ""
+    }
+    return message.takeIf { it.isNotBlank() && it != "null" }
+        ?: body.take(180).ifBlank { fallback }
 }
 
 // ------------------------------------------------------- stale tracked slugs

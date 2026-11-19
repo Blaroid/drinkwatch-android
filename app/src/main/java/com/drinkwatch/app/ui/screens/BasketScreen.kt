@@ -36,6 +36,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.drinkwatch.app.data.BASKET_MAX_ITEMS
+import com.drinkwatch.app.data.BASKET_MAX_QUANTITY
 import com.drinkwatch.app.data.BasketRequestItem
 import com.drinkwatch.app.data.BasketResult
 import com.drinkwatch.app.data.BasketStorage
@@ -48,6 +50,7 @@ import com.drinkwatch.app.ui.components.Chip
 import com.drinkwatch.app.ui.components.ChipTone
 import com.drinkwatch.app.ui.components.ErrorBar
 import com.drinkwatch.app.ui.components.LoadingRow
+import com.drinkwatch.app.ui.components.NoteBar
 import com.drinkwatch.app.ui.components.PrimaryButton
 import com.drinkwatch.app.ui.components.ProductPickerDialog
 import com.drinkwatch.app.ui.components.SectionCard
@@ -62,16 +65,22 @@ fun BasketScreen() {
     val basketStore = remember { BasketStorage(prefs) }
     val scope = rememberCoroutineScope()
 
-    var items by remember { mutableStateOf(basketStore.load()) }
+    val storedBasket = remember { basketStore.load() }
+    var items by remember { mutableStateOf(storedBasket.items) }
     var picker by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<BasketResult?>(null) }
     var route by remember { mutableStateOf<RoutePlan?>(null) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    // An over-limit basket saved by an older build explains itself once here.
+    var limitNote by remember { mutableStateOf(storedBasket.note) }
 
     fun persist(next: List<BasketRequestItem>) {
-        items = next
-        basketStore.save(next)
+        // save() returns the clamped basket, so the list on screen is always one the
+        // API will compare; the note explains anything the limits changed.
+        val clamped = basketStore.save(next)
+        items = clamped.items
+        limitNote = clamped.note
         result = null
         route = null
     }
@@ -126,24 +135,42 @@ fun BasketScreen() {
                         IconButton(onClick = {
                             persist(items.map { if (it.slug == item.slug) it.copy(quantity = (it.quantity - 1).coerceAtLeast(1)) else it })
                         }) { Icon(Icons.Filled.Remove, "Less") }
-                        IconButton(onClick = {
-                            persist(items.map { if (it.slug == item.slug) it.copy(quantity = it.quantity + 1) else it })
-                        }) { Icon(Icons.Filled.Add, "More") }
+                        IconButton(
+                            onClick = {
+                                persist(items.map { if (it.slug == item.slug) it.copy(quantity = it.quantity + 1) else it })
+                            },
+                            // 48 is the server's per-line ceiling; past it there is no comparison.
+                            enabled = item.quantity < BASKET_MAX_QUANTITY,
+                        ) { Icon(Icons.Filled.Add, "More") }
                         IconButton(onClick = { persist(items.filterNot { it.slug == item.slug }) }) {
                             Icon(Icons.Filled.Delete, "Remove")
                         }
                     }
                 }
                 Spacer(Modifier.height(6.dp))
-                OutlinedButton(onClick = { picker = true }, modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = { picker = true },
+                    // A 13th line is a 422, so stop offering one.
+                    enabled = items.size < BASKET_MAX_ITEMS,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
                     Icon(Icons.Filled.Add, null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Add drink")
+                }
+                if (items.size >= BASKET_MAX_ITEMS) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "$BASKET_MAX_ITEMS drinks is the most one comparison covers.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
                 Spacer(Modifier.height(10.dp))
                 PrimaryButton("Compare stores", enabled = items.isNotEmpty() && !loading) { compare() }
             }
 
+            NoteBar(limitNote) { limitNote = null }
             if (loading) LoadingRow("Comparing…")
             ErrorBar(error, onRetry = { compare() })
 
