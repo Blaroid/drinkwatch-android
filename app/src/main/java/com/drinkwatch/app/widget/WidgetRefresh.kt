@@ -17,6 +17,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.drinkwatch.app.App
 import com.drinkwatch.app.R
+import com.drinkwatch.app.data.AlertGate
 import com.drinkwatch.app.data.Api
 import com.drinkwatch.app.data.Notifications
 import com.drinkwatch.app.data.ServiceLocator
@@ -79,11 +80,20 @@ class WidgetWorker(context: Context, params: WorkerParameters) : CoroutineWorker
 
     private suspend fun pollNotifications(api: Api, prefs: com.drinkwatch.app.data.Prefs) {
         if (prefs.token.isNullOrBlank()) return
+        // Ask the system first: notify() reports nothing when it drops an alert, so a
+        // blocked permission or muted channel would otherwise look like a delivery.
+        val blocked = AlertGate.isBlocked(applicationContext)
         val notifications = runCatching { api.notifications() }.getOrNull() ?: return
         // Deliberately not filtered on readAt: the cursor is what decides delivery, so
         // reading an alert in the You tab can never suppress its notification.
-        val pending = Notifications.pending(notifications, prefs.lastSeenNotificationId)
-        if (pending.isEmpty()) return
+        val pending = when (
+            val delivery = Notifications.delivery(notifications, prefs.lastSeenNotificationId, blocked)
+        ) {
+            // Nothing owed, or the phone is dropping alerts: leave the cursor alone so the
+            // batch is still pending once the user turns notifications back on.
+            Notifications.Delivery.Idle, Notifications.Delivery.Blocked -> return
+            is Notifications.Delivery.Post -> delivery.items
+        }
 
         val manager = applicationContext.getSystemService(NotificationManager::class.java) ?: return
         val open = PendingIntent.getActivity(

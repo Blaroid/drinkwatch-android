@@ -182,6 +182,48 @@ class ParsingTest {
         assertEquals(4, Notifications.advancedCursor(listOf(5, 6), emptySet(), previous = 4))
         assertEquals(0, Notifications.advancedCursor(emptyList(), emptySet(), previous = 0))
     }
+
+    @Test
+    fun `alerts are blocked without the permission or with a muted channel`() {
+        val default = 3 // NotificationManager.IMPORTANCE_DEFAULT
+        assertTrue(Notifications.alertsBlocked(notificationsEnabled = false, channelImportance = default))
+        assertTrue(Notifications.alertsBlocked(notificationsEnabled = true, channelImportance = Notifications.IMPORTANCE_NONE))
+        // A channel this process has not created yet is not the same thing as muted.
+        assertFalse(Notifications.alertsBlocked(notificationsEnabled = true, channelImportance = null))
+        assertFalse(Notifications.alertsBlocked(notificationsEnabled = true, channelImportance = default))
+    }
+
+    @Test
+    fun `a blocked poll delivers nothing and leaves the cursor where it was`() {
+        val all = listOf(note(9), note(8), note(7))
+        // The old bug: notify() "succeeded" on a phone that dropped it, so the cursor
+        // walked past alerts the user never saw. A blocked run must not advance it.
+        assertEquals(Notifications.Delivery.Blocked, Notifications.delivery(all, cursor = 6, blocked = true))
+    }
+
+    @Test
+    fun `a poll with nothing owed is idle even while blocked`() {
+        // Nothing is lost here, so there is nothing to retry and nothing to warn about.
+        assertEquals(Notifications.Delivery.Idle, Notifications.delivery(listOf(note(6)), cursor = 6, blocked = true))
+    }
+
+    @Test
+    fun `an unblocked poll posts the oldest unread first`() {
+        val all = listOf(9, 8, 7, 6, 5).map { note(it) }
+        val delivery = Notifications.delivery(all, cursor = 4, blocked = false)
+        assertEquals(listOf(5, 6, 7), (delivery as Notifications.Delivery.Post).items.map { it.id })
+    }
+
+    @Test
+    fun `a failed post after a blocked run is retried, not skipped`() {
+        // Once notifications come back the same batch is attempted: 5 and 6 post, 7
+        // throws, so the cursor stops at 6 and the rest is owed again next run.
+        val delivery = Notifications.delivery(listOf(note(7), note(6), note(5)), cursor = 4, blocked = false)
+        val items = (delivery as Notifications.Delivery.Post).items
+        val cursor = Notifications.advancedCursor(items.map { it.id }, postedIds = setOf(5, 6), previous = 4)
+        assertEquals(6, cursor)
+        assertEquals(listOf(7), Notifications.pending(listOf(note(7), note(6), note(5)), cursor).map { it.id })
+    }
     // A trimmed /v1/basket/compare body: the two stores in the PR, fuel fields included.
     private val basketJson = """
         {
