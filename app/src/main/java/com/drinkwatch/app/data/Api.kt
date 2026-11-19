@@ -13,8 +13,19 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.Instant
+import java.time.OffsetDateTime
 
 class ApiException(message: String, val code: Int = 0) : Exception(message)
+
+/**
+ * What the user sees when a token registered a moment ago is refused as well.
+ *
+ * The server detail ("unknown device token; register first") names an internal
+ * concept and suggests nothing the user can do, so it is replaced once the
+ * automatic recovery has already been tried.
+ */
+private const val EXPIRED_DEVICE = "Device identity expired — tap Retry to register again"
 
 /**
  * Thin OkHttp wrapper over the DrinkWatch API.
@@ -44,15 +55,60 @@ class Api(
         return url.build()
     }
 
-    private fun execute(request: Request): String = transport.call(request).use { response ->
+    /** A response body plus whether it came from the transport's offline fallback. */
+    private class Fetched(val body: String, val stale: Boolean)
+
+    private fun execute(request: Request): Fetched = transport.call(request).use { result ->
+        val response = result.response
         val body = response.body?.string() ?: ""
         if (!response.isSuccessful) {
-            val detail = runCatching { JSONObject(body).optString("detail") }.getOrNull()
-                ?.takeIf { it.isNotBlank() && it != "null" }
-                ?: body.take(180).ifBlank { response.message }
-            throw ApiException(detail, response.code)
+            throw ApiException(errorMessage(body, response.message), response.code)
         }
-        body
+        Fetched(body, result.stale)
+    }
+
+    /**
+     * Run one request, healing a device token the server no longer knows.
+     *
+     * A restored backup, a rebuilt backend or a deleted device row leaves a token
+     * the API answers `401 {"detail":"unknown device token; register first"}` to,
+     * which used to leave alerts, the caffeine log and crowd submissions dead until
+     * the user found Settings -> "Reset device identity". Dropping the stored
+     * identity and registering once is exactly what that button does, so the app can
+     * do it itself; [deviceRecovery] keeps the second 401 from turning into a loop.
+     */
+    private suspend fun <T> withDevice(auth: Boolean, block: suspend () -> T): T {
+        var attempt = 0
+        while (true) {
+            val attempted = prefs.token
+            try {
+                return block()
+            } catch (error: ApiException) {
+                when (deviceRecovery(error.code, attempt, auth)) {
+                    DeviceRecovery.Fail -> throw error
+                    DeviceRecovery.ReRegister -> {
+                        renewDevice(attempted)
+                        attempt++
+                    }
+                    DeviceRecovery.Expired -> throw ApiException(EXPIRED_DEVICE, error.code)
+                }
+            }
+        }
+    }
+
+    /**
+     * Forget the token the server rejected and register a new one.
+     *
+     * Compared inside the mutex because several requests can hit 401 at once: only
+     * the first should re-register, the rest retry with the token it just stored
+     * rather than orphaning it with a second device.
+     */
+    private suspend fun renewDevice(rejected: String?): String = deviceMutex.withLock {
+        val current = prefs.token?.takeIf { it.isNotBlank() }
+        if (current != null && current != rejected) return@withLock current
+        prefs.token = null
+        prefs.deviceId = 0
+        registerDevice()
     }
 
     private fun authHeader(request: Request.Builder, required: Boolean): Request.Builder {
@@ -67,18 +123,32 @@ class Api(
         path: String,
         params: Map<String, String?> = emptyMap(),
         auth: Boolean = false,
-    ): JSONObject = withContext(Dispatchers.IO) {
-        val request = authHeader(Request.Builder().url(URL(path, params)).get(), auth).build()
-        JSONObject(execute(request))
+    ): JSONObject = JSONObject(getFetched(path, params, auth).body)
+
+    /**
+     * [getJson] that also reports whether the body is the offline cache copy.
+     * /v1/widget is the only endpoint that has to tell the two apart.
+     */
+    private suspend fun getFetched(
+        path: String,
+        params: Map<String, String?> = emptyMap(),
+        auth: Boolean = false,
+    ): Fetched = withDevice(auth) {
+        withContext(Dispatchers.IO) {
+            val request = authHeader(Request.Builder().url(URL(path, params)).get(), auth).build()
+            execute(request)
+        }
     }
 
     private suspend fun getArray(
         path: String,
         params: Map<String, String?> = emptyMap(),
         auth: Boolean = false,
-    ): JSONArray = withContext(Dispatchers.IO) {
-        val request = authHeader(Request.Builder().url(URL(path, params)).get(), auth).build()
-        JSONArray(execute(request))
+    ): JSONArray = withDevice(auth) {
+        withContext(Dispatchers.IO) {
+            val request = authHeader(Request.Builder().url(URL(path, params)).get(), auth).build()
+            JSONArray(execute(request).body)
+        }
     }
 
     private suspend fun postJson(
@@ -86,17 +156,21 @@ class Api(
         body: JSONObject,
         auth: Boolean = true,
         params: Map<String, String?> = emptyMap(),
-    ): JSONObject = withContext(Dispatchers.IO) {
-        val request = authHeader(
-            Request.Builder().url(URL(path, params)).post(body.toString().toRequestBody(jsonType)),
-            auth,
-        ).build()
-        JSONObject(execute(request))
+    ): JSONObject = withDevice(auth) {
+        withContext(Dispatchers.IO) {
+            val request = authHeader(
+                Request.Builder().url(URL(path, params)).post(body.toString().toRequestBody(jsonType)),
+                auth,
+            ).build()
+            JSONObject(execute(request).body)
+        }
     }
 
-    private suspend fun deleteJson(path: String): JSONObject = withContext(Dispatchers.IO) {
-        val request = authHeader(Request.Builder().url(URL(path, emptyMap())).delete(), true).build()
-        JSONObject(execute(request))
+    private suspend fun deleteJson(path: String): JSONObject = withDevice(true) {
+        withContext(Dispatchers.IO) {
+            val request = authHeader(Request.Builder().url(URL(path, emptyMap())).delete(), true).build()
+            JSONObject(execute(request).body)
+        }
     }
 
     // ---------------------------------------------------------------- device
@@ -124,13 +198,13 @@ class Api(
 
     // ---------------------------------------------------------------- reads
 
-    suspend fun widget(
+    private suspend fun widget(
         lat: Double,
         lon: Double,
         radiusKm: Int,
         slugs: List<String>,
         suggest: Int = 0,
-    ): JSONObject = getJson(
+    ): Fetched = getFetched(
         "/v1/widget",
         mapOf(
             "lat" to lat.toString(),
@@ -162,25 +236,34 @@ class Api(
         suggest: Int = 0,
         cache: Boolean = false,
     ): List<WidgetItem> {
-        val (payload, dropped) = recoveringWidget(lat, lon, radiusKm, slugs, suggest)
+        val fetch = recoveringWidget(lat, lon, radiusKm, slugs, suggest)
+        val payload = fetch.payload
 
-        if (dropped.isNotEmpty()) {
+        if (fetch.dropped.isNotEmpty()) {
             // The response that dropped a slug no longer mentions it, so its name
             // can only come from the previous payload.
             val labels = itemsFromCache(prefs.widgetCache).associate { it.slug to it.label }
             // Remove only what went stale: the user may have edited the list while
             // the request was in flight.
-            prefs.trackedSlugs = prefs.trackedSlugs.filterNot { it in dropped }
-            staleNote(dropped, labels)?.let { prefs.trackedNote = it }
+            prefs.trackedSlugs = prefs.trackedSlugs.filterNot { it in fetch.dropped }
+            staleNote(fetch.dropped, labels)?.let { prefs.trackedNote = it }
         }
         if (cache) {
+            // The widget shows this copy, so keep it in step with what we just
+            // parsed; only an answer from the server may call it fresh. A stale
+            // copy served during an outage must not reset the timestamp, or the
+            // widget would present month-old prices as a refresh from minutes ago
+            // and the worker's 6-hour recovery test could never fire.
             prefs.widgetCache = payload.toString()
-            prefs.widgetCacheAt = System.currentTimeMillis()
+            if (fetch.live) prefs.widgetCacheAt = System.currentTimeMillis()
         }
 
         val items = payload.optJSONArray("items") ?: JSONArray()
         return (0 until items.length()).map { items.getJSONObject(it).toWidgetItem() }
     }
+
+    /** The widget payload, the slugs a 404 recovery had to drop, and whether a server answered. */
+    private class WidgetFetch(val payload: JSONObject, val dropped: List<String>, val live: Boolean)
 
     /** The widget payload plus the slugs a 404 recovery had to remove to get it. */
     private suspend fun recoveringWidget(
@@ -189,18 +272,18 @@ class Api(
         radiusKm: Int,
         slugs: List<String>,
         suggest: Int,
-    ): Pair<JSONObject, List<String>> {
+    ): WidgetFetch {
         var wanted = slugs
         val dropped = mutableListOf<String>()
         var giveUp = false
         while (true) {
             val ask = if (giveUp) emptyList() else wanted
             try {
-                val payload = widget(
+                val fetched = widget(
                     lat, lon, radiusKm, ask,
                     suggest = if (ask.isEmpty()) 0 else suggest,
                 )
-                return payload to dropped
+                return WidgetFetch(JSONObject(fetched.body), dropped, live = !fetched.stale)
             } catch (error: ApiException) {
                 if (error.code != 404 || ask.isEmpty()) throw error
                 val pruned = pruneStale(ask, error.message)
@@ -267,13 +350,15 @@ class Api(
 
     // ---------------------------------------------------------------- writes
 
-    suspend fun uploadPhoto(bytes: ByteArray): String = withContext(Dispatchers.IO) {
-        val body = MultipartBody.Builder()
-            .setType(MultipartBody.FORM)
-            .addFormDataPart("file", "tag.jpg", bytes.toRequestBody(jpegType))
-            .build()
-        val request = authHeader(Request.Builder().url(URL("/v1/photos", emptyMap())).post(body), true).build()
-        JSONObject(execute(request)).getString("token")
+    suspend fun uploadPhoto(bytes: ByteArray): String = withDevice(true) {
+        withContext(Dispatchers.IO) {
+            val body = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("file", "tag.jpg", bytes.toRequestBody(jpegType))
+                .build()
+            val request = authHeader(Request.Builder().url(URL("/v1/photos", emptyMap())).post(body), true).build()
+            JSONObject(execute(request).body).getString("token")
+        }
     }
 
     suspend fun submitObservation(
@@ -437,7 +522,7 @@ class Api(
             .header("User-Agent", "DrinkWatch-Android/0.1")
             .get()
             .build()
-        val payload = JSONObject(execute(request))
+        val payload = JSONObject(execute(request).body)
         AppUpdate(
             versionCode = payload.optInt("versionCode", 0),
             versionName = payload.optString("versionName", "?"),
@@ -487,18 +572,76 @@ class Api(
         private const val TAG = "Api"
 
         /** Parse a previously cached /v1/widget payload (offline fallback). */
-        fun itemsFromCache(json: String?): List<WidgetItem> {
-            if (json.isNullOrBlank()) return emptyList()
+        fun itemsFromCache(json: String?): List<WidgetItem> = cachedWidget(json).items
+
+        /**
+         * The cached payload's rows plus the timestamp the server built it, which
+         * is what lets the widget show how old its prices really are.
+         */
+        fun cachedWidget(json: String?): WidgetCache {
+            if (json.isNullOrBlank()) return WidgetCache(emptyList(), null)
             return runCatching {
-                val items = JSONObject(json).optJSONArray("items") ?: JSONArray()
-                (0 until items.length()).map { items.getJSONObject(it).toWidgetItem() }
-            }.getOrDefault(emptyList())
+                val root = JSONObject(json)
+                val items = root.optJSONArray("items") ?: JSONArray()
+                WidgetCache(
+                    items = (0 until items.length()).map { items.getJSONObject(it).toWidgetItem() },
+                    generatedAt = parseInstant(root.str("generated_at")),
+                )
+            }.getOrDefault(WidgetCache(emptyList(), null))
         }
 
         fun logError(where: String, throwable: Throwable) {
             Log.w(TAG, where + " failed: " + throwable.message)
         }
     }
+}
+
+// ----------------------------------------------------------- device identity
+
+/** What an authenticated request should do after a failure. */
+internal enum class DeviceRecovery { Fail, ReRegister, Expired }
+
+/**
+ * Decide how an authenticated request recovers from a failed attempt.
+ *
+ * The API answers 401 when it has forgotten this device, and one re-registration
+ * fixes that. A 401 that survives a fresh token means the server is refusing the
+ * new identity too (or the token store is broken), so [Expired] replaces the raw
+ * detail with wording that points at a retry instead of looping.
+ *
+ * Public endpoints are exempt: there is no token to doubt, so a 401 there must
+ * never wipe the identity. [attempt] counts the retries already made by this call.
+ */
+internal fun deviceRecovery(status: Int, attempt: Int, auth: Boolean): DeviceRecovery = when {
+    !auth || status != 401 -> DeviceRecovery.Fail
+    attempt == 0 -> DeviceRecovery.ReRegister
+    else -> DeviceRecovery.Expired
+}
+
+// -------------------------------------------------------------------- errors
+
+/**
+ * Human-readable message from an unsuccessful response body.
+ *
+ * FastAPI reports validation failures with `detail` as an *array* of error
+ * objects. Reading that with optString() returned the array's toString(), so a
+ * 422 from /v1/basket/compare showed ~1000 characters of echoed request JSON
+ * instead of the sentence that explains the problem; the per-error `msg` fields
+ * are that sentence. A plain string detail still wins (the 404 stale-slug recovery
+ * reads it), and anything else falls back to the raw body as before.
+ */
+internal fun errorMessage(body: String, fallback: String = ""): String {
+    val detail = runCatching { JSONObject(body).opt("detail") }.getOrNull()
+    val message = when (detail) {
+        is JSONArray -> (0 until detail.length())
+            .mapNotNull { (detail.opt(it) as? JSONObject)?.optString("msg")?.trim()?.takeIf(String::isNotBlank) }
+            .distinct()
+            .joinToString("; ")
+        is String -> detail.trim()
+        else -> ""
+    }
+    return message.takeIf { it.isNotBlank() && it != "null" }
+        ?: body.take(180).ifBlank { fallback }
 }
 
 // ------------------------------------------------------- stale tracked slugs
@@ -615,6 +758,29 @@ internal fun JSONObject.toWidgetItem(): WidgetItem = WidgetItem(
     ageHours = optDouble("age_hours", 0.0),
     suggested = optBoolean("suggested", false),
 )
+
+/** An ISO-8601 timestamp from the API as epoch millis, or null when unreadable. */
+internal fun parseInstant(value: String?): Long? {
+    if (value.isNullOrBlank()) return null
+    return runCatching { Instant.parse(value).toEpochMilli() }
+        // A tz-aware server may serialise "+10:00" instead of "Z".
+        .recoverCatching { OffsetDateTime.parse(value).toInstant().toEpochMilli() }
+        .getOrNull()
+}
+
+/**
+ * The freshness note in the widget header, or null when nothing is cached.
+ *
+ * A payload's `age_hours` are frozen when the server builds it, so a copy served
+ * from the offline cache would keep claiming "2 h ago" for as long as the network
+ * is down. Adding the time elapsed since `generated_at` gives the real age of the
+ * oldest price on the widget — the same figure the in-app list shows per row.
+ */
+internal fun cachedAgeLabel(generatedAt: Long?, oldestAgeHours: Double, nowMillis: Long): String? {
+    generatedAt ?: return null
+    val since = (nowMillis - generatedAt).coerceAtLeast(0L) / 3_600_000.0
+    return Price.age(since + oldestAgeHours.coerceAtLeast(0.0))
+}
 
 internal fun JSONObject.toBasketResult(): BasketResult {
     val stores = optJSONArray("stores") ?: JSONArray()
