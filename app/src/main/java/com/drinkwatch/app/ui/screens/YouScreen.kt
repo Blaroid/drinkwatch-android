@@ -38,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.drinkwatch.app.data.AlertGate
 import com.drinkwatch.app.data.AppNotification
 import com.drinkwatch.app.data.CaffeineToday
 import com.drinkwatch.app.data.PriceAlert
@@ -64,11 +65,15 @@ fun YouScreen(onOpenSettings: () -> Unit = {}) {
     var notifications by remember { mutableStateOf<List<AppNotification>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
+    var alertsBlocked by remember { mutableStateOf(false) }
     var alertPicker by remember { mutableStateOf(false) }
     var caffeinePicker by remember { mutableStateOf(false) }
     var alertFor by remember { mutableStateOf<Product?>(null) }
 
     fun load() {
+        // The system answers this locally and can change while the app is in the
+        // background, so ask on every load rather than trusting a cached flag.
+        alertsBlocked = AlertGate.isBlocked(context)
         scope.launch {
             loading = true
             error = null
@@ -186,6 +191,17 @@ fun YouScreen(onOpenSettings: () -> Unit = {}) {
             }
 
             SectionCard(title = "Notifications") {
+                if (alertsBlocked) {
+                    // Nothing here can reach the phone right now, and the background poll
+                    // deliberately holds the cursor still while that is true, so this is
+                    // the only place the user learns why the alerts went quiet.
+                    Text(
+                        "Alerts are off — enable notifications for DrinkWatch so price alerts can reach you.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
                 if (notifications.isEmpty()) {
                     Text(
                         "Nothing yet. Alerts land here, and as a phone notification in the background.",
