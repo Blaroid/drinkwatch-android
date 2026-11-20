@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -50,6 +51,7 @@ import com.drinkwatch.app.data.PlaceName
 import com.drinkwatch.app.data.Price
 import com.drinkwatch.app.data.Product
 import com.drinkwatch.app.data.ServiceLocator
+import com.drinkwatch.app.data.ThemeMode
 import com.drinkwatch.app.data.UpdateState
 import com.drinkwatch.app.ui.components.ErrorBar
 import com.drinkwatch.app.ui.components.ProductPickerDialog
@@ -59,7 +61,11 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(onBack: () -> Unit) {
+fun SettingsScreen(
+    onBack: () -> Unit,
+    themeMode: ThemeMode,
+    onThemeMode: (ThemeMode) -> Unit,
+) {
     val context = LocalContext.current
     val prefs = remember { ServiceLocator.prefs(context) }
     val scope = rememberCoroutineScope()
@@ -137,6 +143,28 @@ fun SettingsScreen(onBack: () -> Unit) {
             Modifier.padding(padding).verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            SectionCard(title = "Appearance") {
+                Text(
+                    "Follow system uses the phone's dark-mode setting.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        ThemeMode.System to "Follow system",
+                        ThemeMode.Light to "Light",
+                        ThemeMode.Dark to "Dark",
+                    ).forEach { (option, label) ->
+                        FilterChip(
+                            selected = themeMode == option,
+                            onClick = { onThemeMode(option) },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+            }
+
             SectionCard(title = "Home location") {
                 Text(
                     "Prices are measured from here.",
