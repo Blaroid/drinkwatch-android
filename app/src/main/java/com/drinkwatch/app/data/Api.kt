@@ -341,8 +341,29 @@ class Api(
         )
     }
 
-    suspend fun searchProducts(query: String, limit: Int = 20): List<Product> {
-        val array = getArray("/v1/products", mapOf("q" to query.ifBlank { null }, "limit" to limit.toString()))
+    /**
+     * Catalogue search.
+     *
+     * `strict` is what the add picker asks for: every typed word must begin a
+     * word in the title, with no fuzzy near-miss, so a typo shows nothing rather
+     * than another drink. Elsewhere (the tag prefill) a forgiving match is fine.
+     */
+    suspend fun searchProducts(query: String, limit: Int = 20, strict: Boolean = false): List<Product> {
+        val array = getArray(
+            "/v1/products",
+            mapOf(
+                "q" to query.ifBlank { null },
+                "limit" to limit.toString(),
+                "strict" to if (strict) "true" else null,
+            ),
+        )
+        return (0 until array.length()).map { array.getJSONObject(it).toProduct() }
+    }
+
+    /** Other sizes and carton counts of the same flavour, for the add picker. */
+    suspend fun productVariants(slug: String): List<Product> {
+        // Slugs are lowercase alnum/dash, so they need no query encoding.
+        val array = getArray("/v1/products/" + slug + "/variants")
         return (0 until array.length()).map { array.getJSONObject(it).toProduct() }
     }
 

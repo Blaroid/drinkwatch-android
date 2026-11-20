@@ -6,6 +6,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -22,6 +23,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -50,6 +53,7 @@ import com.drinkwatch.app.data.Api
 import com.drinkwatch.app.data.Images
 import com.drinkwatch.app.data.Ocr
 import com.drinkwatch.app.data.PhotoClass
+import com.drinkwatch.app.data.Variants
 import com.drinkwatch.app.data.Prefs
 import com.drinkwatch.app.data.Price
 import com.drinkwatch.app.data.Product
@@ -60,7 +64,6 @@ import com.drinkwatch.app.ui.components.ErrorBar
 import com.drinkwatch.app.ui.components.MoneyField
 import com.drinkwatch.app.ui.components.PrimaryButton
 import com.drinkwatch.app.ui.components.ProductPickerDialog
-import com.drinkwatch.app.ui.components.QuickPriceDialog
 import com.drinkwatch.app.ui.components.SectionCard
 import com.drinkwatch.app.ui.components.StorePickerDialog
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
@@ -108,6 +111,9 @@ fun AddScreen() {
     var barcodeText by remember { mutableStateOf("") }
     var searchQuery by remember { mutableStateOf("") }
     var searchResults by remember { mutableStateOf<List<Product>>(emptyList()) }
+    // The chosen drink's flavour family: itself plus every other size/carton the
+    // server knows. Chips are drawn from the family minus whichever row is held.
+    var family by remember { mutableStateOf<List<Product>>(emptyList()) }
     var photoKind by remember { mutableStateOf<PhotoClass.Kind?>(null) }
     var receiptText by remember { mutableStateOf<String?>(null) }
     var receiptCandidates by remember { mutableStateOf<List<ReceiptCandidate>>(emptyList()) }
@@ -118,8 +124,6 @@ fun AddScreen() {
     var productPicker by remember { mutableStateOf(false) }
     var storePicker by remember { mutableStateOf(false) }
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
-    var quickProduct by remember { mutableStateOf<Product?>(null) }
-    var quickBarcode by remember { mutableStateOf<String?>(null) }
     var pendingFile by remember { mutableStateOf<java.io.File?>(null) }
     var knownCode by remember { mutableStateOf<String?>(null) }
 
@@ -143,7 +147,24 @@ fun AddScreen() {
         receiptCandidates = emptyList()
         receiptSelected = emptySet()
         knownCode = null
+        family = emptyList()
         error = null
+    }
+
+    /**
+     * Select a catalogue row, and offer its other sizes.
+     *
+     * Every entry point (manual pick, barcode, tag OCR, browse dialog) goes
+     * through here, so whichever way the drink was found the user can correct
+     * the size before the price is recorded.
+     */
+    fun choose(picked: Product) {
+        product = picked
+        family = emptyList()
+        scope.launch {
+            val siblings = runCatching { api.productVariants(picked.slug) }.getOrDefault(emptyList())
+            family = Variants.sorted(listOf(picked) + siblings)
+        }
     }
 
     fun fail(message: String?) {
@@ -161,7 +182,7 @@ fun AddScreen() {
                     knownCode = code
                     val found = hit.product
                     if (found != null) {
-                        product = found
+                        choose(found)
                         // The drink is known, so the only question left is the store.
                         if (store == null) storePicker = true
                     } else {
@@ -214,7 +235,9 @@ fun AddScreen() {
                             if (cents != null) {
                                 priceText = String.format(java.util.Locale.US, "%.2f", cents / 100.0)
                             }
-                            prefillFromTag(api, text) { matched -> product = product ?: matched }
+                            prefillFromTag(api, text) { matched ->
+                                if (product == null) choose(matched)
+                            }
                             if (cents == null && text.isBlank()) {
                                 reportPhotoProblem("Could not read that tag. Type the price instead.")
                             }
@@ -357,7 +380,7 @@ fun AddScreen() {
             return@LaunchedEffect
         }
         delay(300)
-        searchResults = runCatching { api.searchProducts(query, 8) }.getOrDefault(emptyList())
+        searchResults = runCatching { api.searchProducts(query, 8, strict = true) }.getOrDefault(emptyList())
     }
 
     BackHandler(enabled = method != null) { reset() }
@@ -500,8 +523,9 @@ fun AddScreen() {
                             searchQuery = it
                             if (it.isBlank()) product = null
                         },
+                        onDismissResults = { searchResults = emptyList() },
                         onPick = { picked ->
-                            product = picked
+                            choose(picked)
                             searchResults = emptyList()
                             searchQuery = ""
                         },
@@ -521,6 +545,12 @@ fun AddScreen() {
                         )
                     }
                 }
+
+                val held = product
+                val otherSizes = family.filter { it.slug != held?.slug }
+                if (held != null && otherSizes.isNotEmpty()) {
+                    VariantChips(otherSizes) { picked -> product = picked }
+                }
             }
         }
     }
@@ -530,7 +560,7 @@ fun AddScreen() {
             initialQuery = searchQuery.ifBlank { product?.name.orEmpty() },
             onDismiss = { productPicker = false },
             onPick = {
-                product = it
+                choose(it)
                 productPicker = false
                 if (store == null) storePicker = true
             },
@@ -546,32 +576,13 @@ fun AddScreen() {
             },
         )
     }
-    quickProduct?.let { chosen ->
-        QuickPriceDialog(
-            product = chosen,
-            barcode = quickBarcode.orEmpty(),
-            api = api,
-            prefs = prefs,
-            onDismiss = { quickProduct = null },
-            onSaved = { message ->
-                quickProduct = null
-                tell(message)
-            },
-        )
-    }
     unknownBarcode?.let { code ->
-        NewProductDialog(
+        UnknownBarcodeDialog(
             barcode = code,
-            suggestedName = null,
-            suggestedBrand = null,
-            api = api,
-            prefs = prefs,
             onDismiss = { unknownBarcode = null },
-            onDone = { added, _ ->
+            onPickFromCatalogue = {
                 unknownBarcode = null
-                product = added
-                quickProduct = added
-                quickBarcode = code
+                productPicker = true
             },
         )
     }
@@ -801,6 +812,7 @@ private fun ManualPane(
     product: Product?,
     onQuery: (String) -> Unit,
     onPick: (Product) -> Unit,
+    onDismissResults: () -> Unit,
     onChangeDrink: () -> Unit,
     form: @Composable () -> Unit,
 ) {
@@ -813,35 +825,41 @@ private fun ManualPane(
         return
     }
     SectionCard(title = "Which drink?") {
-        OutlinedTextField(
-            value = query,
-            onValueChange = onQuery,
-            label = { Text("Search the catalogue") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        if (results.isEmpty()) {
-            Spacer(Modifier.height(6.dp))
-            Text(
-                if (query.length < 2) "Type at least two letters, or browse the full list." else "No match yet.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        Box {
+            OutlinedTextField(
+                value = query,
+                onValueChange = onQuery,
+                label = { Text("Search the catalogue") },
+                placeholder = { Text("Brand and flavour, e.g. V Blue") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
             )
-            TextButton(onClick = onChangeDrink) { Text("Browse all drinks") }
-        } else {
-            results.take(6).forEach { candidate ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable { onPick(candidate) }
-                        .padding(vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(candidate.label(), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                    Text("add", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+            DropdownMenu(
+                expanded = results.isNotEmpty(),
+                onDismissRequest = onDismissResults,
+            ) {
+                results.forEach { candidate ->
+                    DropdownMenuItem(
+                        text = { Text(candidate.label()) },
+                        onClick = { onPick(candidate) },
+                    )
                 }
             }
         }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            when {
+                query.trim().length < 2 ->
+                    "Type at least two letters. Only drinks already in the catalogue can be added."
+                results.isEmpty() ->
+                    "No catalogue drink has that spelling. Check it, or browse the list."
+                else ->
+                    "${results.size} matches — pick the exact can."
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        TextButton(onClick = onChangeDrink) { Text("Browse all drinks") }
     }
 }
 
@@ -921,180 +939,50 @@ private suspend fun prefillFromTag(api: Api, text: String, onMatch: (Product) ->
 }
 
 @Composable
-private fun NewProductDialog(
+private fun UnknownBarcodeDialog(
     barcode: String,
-    suggestedName: String?,
-    suggestedBrand: String?,
-    api: Api,
-    prefs: Prefs,
     onDismiss: () -> Unit,
-    onDone: (Product, String) -> Unit,
+    onPickFromCatalogue: () -> Unit,
 ) {
-    val scope = rememberCoroutineScope()
-    // Open Food Facts occasionally knows the can before we do; start from that.
-    var name by remember { mutableStateOf(suggestedName.orEmpty()) }
-    var brand by remember { mutableStateOf(suggestedBrand.orEmpty()) }
-    var size by remember { mutableStateOf(sizeFromName(suggestedName.orEmpty())) }
-    var sizeEdited by remember { mutableStateOf(false) }
-    var price by remember { mutableStateOf("") }
-    var store by remember { mutableStateOf<Store?>(null) }
-    var storePicker by remember { mutableStateOf(false) }
-    var busy by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var matches by remember { mutableStateOf<List<Product>>(emptyList()) }
-
-    // Live completion against the catalogue: the fastest way to say "it is this
-    // one" without retyping a name we already know.
-    LaunchedEffect(name) {
-        if (name.trim().length < 2) {
-            matches = emptyList()
-            return@LaunchedEffect
-        }
-        delay(300)
-        matches = runCatching { api.searchProducts(name.trim(), 6) }.getOrDefault(emptyList())
-    }
-
+    // The add flow only writes against rows that already exist. A barcode the
+    // catalogue has never seen cannot be turned into a product from here: that
+    // path let a misread or a typo invent a drink, which every price surface
+    // then had to live with. Saying so is more useful than a form.
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("New can") },
+        title = { Text("Not in the catalogue") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    "Barcode $barcode is not in the catalogue yet. Type what is printed on the can and it will be added for review.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { typed ->
-                        name = typed.take(160)
-                        if (!sizeEdited) size = sizeFromName(typed)
-                    },
-                    label = { Text("Name on the can") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                // Suggestions: tap one to adopt its brand and size.
-                matches.take(4).forEach { candidate ->
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                name = candidate.label()
-                                brand = candidate.brand
-                                size = candidate.sizeMl?.toString() ?: size
-                                sizeEdited = true
-                                matches = emptyList()
-                            }
-                            .padding(vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            candidate.label(),
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Text(
-                            "use",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = brand,
-                        onValueChange = { brand = it.take(60) },
-                        label = { Text("Brand") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f),
-                    )
-                    OutlinedTextField(
-                        value = size,
-                        onValueChange = {
-                            size = it.filter { ch -> ch.isDigit() }
-                            sizeEdited = true
-                        },
-                        label = { Text("ml") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.width(90.dp),
-                    )
-                }
-                MoneyField(price, { price = it }, "Price (optional)")
-                OutlinedButton(onClick = { storePicker = true }, modifier = Modifier.fillMaxWidth()) {
-                    Text(store?.name ?: "Store (optional)")
-                }
-                error?.let {
-                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
-                }
-            }
+            Text(
+                "Barcode $barcode does not belong to any drink we list. Only drinks " +
+                    "already in the catalogue can be added, so check the code or pick " +
+                    "the drink itself.",
+                style = MaterialTheme.typography.bodySmall,
+            )
         },
         confirmButton = {
-            TextButton(
-                enabled = name.length >= 2 && !busy,
-                onClick = {
-                    scope.launch {
-                        busy = true
-                        error = null
-                        runCatching {
-                            api.ensureDevice()
-                            api.submitPending(
-                                barcode = barcode,
-                                name = name,
-                                brand = brand.ifBlank { null },
-                                sizeMl = size.toIntOrNull(),
-                                storeId = store?.id,
-                                priceCents = Price.parseToCents(price),
-                                photoToken = null,
-                            )
-                        }.onSuccess { response ->
-                            val added = response.optJSONObject("product")
-                            val product = added?.let { json ->
-                                Product(
-                                    id = json.optInt("id"),
-                                    slug = json.optString("slug"),
-                                    brand = json.optString("brand"),
-                                    name = json.optString("name"),
-                                    variant = if (json.isNull("variant")) null else json.optString("variant"),
-                                    sizeMl = if (json.isNull("size_ml")) null else json.optInt("size_ml"),
-                                    packCount = json.optInt("pack_count", 1),
-                                    barcode = if (json.isNull("barcode")) null else json.optString("barcode"),
-                                    category = json.optString("category", "energy"),
-                                )
-                            }
-                            if (product != null) {
-                                onDone(product, "Added " + product.label() + ". What did you pay?")
-                            } else {
-                                onDone(
-                                    Product(0, "", brand, name, null, size.toIntOrNull(), 1, null, "energy"),
-                                    "Added $name. What did you pay?",
-                                )
-                            }
-                        }.onFailure { error = it.message }
-                        busy = false
-                    }
-                },
-            ) { Text(if (busy) "Adding…" else "Add and enter price") }
+            TextButton(onClick = onPickFromCatalogue) { Text("Pick the drink") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
     )
-
-    if (storePicker) {
-        StorePickerDialog(
-            prefs = prefs,
-            onDismiss = { storePicker = false },
-            onPick = {
-                store = it
-                storePicker = false
-            },
-        )
-    }
 }
 
-/** Pull "500ml" or "4 x 500ml" out of whatever the label says. */
-private fun sizeFromName(text: String): String {
-    val multi = Regex("""(\d{1,2})\s*[x×]\s*(\d{2,4})\s*ml""", RegexOption.IGNORE_CASE).find(text)
-    if (multi != null) return multi.groupValues[2]
-    val single = Regex("""(\d{2,4})\s*ml""", RegexOption.IGNORE_CASE).find(text)
-    return single?.groupValues?.get(1) ?: ""
+/** The same drink in another size or carton: one tap instead of a new search. */
+@Composable
+private fun VariantChips(siblings: List<Product>, onPick: (Product) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            "Other sizes of this flavour",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            siblings.forEach { sibling ->
+                FilterChip(
+                    selected = false,
+                    onClick = { onPick(sibling) },
+                    label = { Text(Variants.chipLabel(sibling)) },
+                )
+            }
+        }
+    }
 }
