@@ -103,6 +103,12 @@ class Prefs(context: Context) {
         get() = store.getString(KEY_TRACKED_NOTE, null)
         set(value) = store.edit().putString(KEY_TRACKED_NOTE, value).apply()
 
+    /** Appearance choice: "system" | "light" | "dark"; see [ThemeMode]. */
+    var themeMode: String
+        get() = store.getString(KEY_THEME, ThemeMode.System.storageValue)
+            ?: ThemeMode.System.storageValue
+        set(value) = store.edit().putString(KEY_THEME, value).apply()
+
     /** Version the user chose to skip, so the launch prompt does not nag. */
     var skippedUpdateCode: Int
         get() = store.getInt(KEY_SKIPPED_UPDATE, 0)
@@ -183,5 +189,6 @@ class Prefs(context: Context) {
         private const val KEY_BASKET = "basket"
         private const val KEY_PLACE_LABEL = "place_label"
         private const val KEY_SKIPPED_UPDATE = "skipped_update"
+        private const val KEY_THEME = "theme_mode"
     }
 }

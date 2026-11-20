@@ -22,6 +22,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.drinkwatch.app.data.ThemeMode
 import com.drinkwatch.app.ui.screens.AddScreen
 import com.drinkwatch.app.ui.screens.BasketScreen
 import com.drinkwatch.app.ui.screens.BudgetScreen
@@ -40,7 +41,10 @@ private val tabs = listOf(
 )
 
 @Composable
-fun AppRoot() {
+fun AppRoot(
+    themeMode: ThemeMode,
+    onThemeMode: (ThemeMode) -> Unit,
+) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
@@ -83,7 +87,13 @@ fun AppRoot() {
             composable("you") {
                 YouScreen(onOpenSettings = { navController.navigate("settings") })
             }
-            composable("settings") { SettingsScreen(onBack = { navController.popBackStack() }) }
+            composable("settings") {
+                SettingsScreen(
+                    onBack = { navController.popBackStack() },
+                    themeMode = themeMode,
+                    onThemeMode = onThemeMode,
+                )
+            }
         }
     }
 }
